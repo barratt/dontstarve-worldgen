@@ -1,0 +1,84 @@
+# Builds the ds-worldgen command line for Linux and Windows and publishes
+# them as a GitHub release. Runs on a version tag (git tag v0.1.0; git push
+# origin v0.1.0) or by hand with a tag name. The binaries contain no game
+# data: they read the games from the user's installs. The website zip is
+# built locally (web/build-standalone.ps1 -Public) and added to the release
+# separately.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux
+            exe: ds-worldgen
+          - os: windows-latest
+            target: x86_64-windows
+            exe: ds-worldgen.exe
+    runs-on: ${{ matrix.os }}
+    env:
+      # Release binaries without debug information.
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      CARGO_PROFILE_RELEASE_STRIP: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release --bin ds-worldgen
+      - name: Package
+        shell: bash
+        run: |
+          dir="ds-worldgen-$TAG-${{ matrix.target }}"
+          mkdir "$dir"
+          cp "target/release/${{ matrix.exe }}" README.md LICENSE "$dir/"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            7z a "$dir.zip" "$dir" > /dev/null
+            echo "ASSET=$dir.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$dir.tar.gz" "$dir"
+            echo "ASSET=$dir.tar.gz" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          retention-days: 1
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Command-line generator for Linux and Windows. It contains no game data: point it at your Don't Starve / Don't Starve Together installs (see the README)."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" assets/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --notes "$notes"
+          fi
