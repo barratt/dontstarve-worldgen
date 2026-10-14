@@ -45,12 +45,17 @@ fn main() {
     // on every platform; symbols are prefixed dsm_ (names.h).
     let mut musl = cc::Build::new();
     musl.include("vendor/musl-math").warnings(false);
-    // features.h (hidden + the dsm_ renames) is forced into every file, as
-    // some include only system headers.
+    // C libraries without <features.h> (MSVC, macOS) get a stand-in.
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if musl.get_compiler().is_like_msvc() || target.contains("apple") {
+        musl.include("vendor/musl-math/compat");
+    }
+    // dsm_prelude.h (system headers, then hidden and the dsm_ renames) is
+    // forced into every file, as some include only system headers.
     if musl.get_compiler().is_like_msvc() {
-        musl.flag("/std:c11").flag("/fp:precise").flag("/FIfeatures.h");
+        musl.flag("/std:c11").flag("/fp:precise").flag("/FIdsm_prelude.h");
     } else {
-        musl.flag("-ffp-contract=off").flag("-fno-builtin").flag("-std=c99").flag("-include").flag("features.h");
+        musl.flag("-ffp-contract=off").flag("-fno-builtin").flag("-std=c99").flag("-include").flag("dsm_prelude.h");
     }
     wasm_eh(&mut musl);
     for entry in std::fs::read_dir("vendor/musl-math").unwrap().flatten() {

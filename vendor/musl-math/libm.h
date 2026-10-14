@@ -8,7 +8,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
-#include "features.h"
+#include "dsm_prelude.h"
 
 /* Support non-nearest rounding mode; no signaling NaNs. */
 #define WANT_ROUNDING 1
