@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DS World Search</title>
+<meta name="description" content="Search Don't Starve and Don't Starve Together seeds for the world you want.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%238a4b22'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English:ital@0;1&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <img id="logo" class="logo" alt="" hidden>
+  <div class="title">
+    <h1 id="title-text">Don't Starve world search</h1>
+    <p class="tagline">Find the world worth starving in.</p>
+  </div>
+  <a class="gh" href="https://github.com/barratt/dontstarve-worldgen" title="Source on GitHub" aria-label="Source on GitHub">
+    <svg viewBox="0 0 16 16" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    <span>GitHub</span>
+  </a>
+</header>
+
+<main>
+  <section class="card" id="loading">
+    <p class="muted">Loading the generator…</p>
+  </section>
+
+  <section class="card" id="nodata" hidden>
+    <h2>No game data built in</h2>
+    <p>
+      This copy of the page was built without game data. Build your own from
+      your installed games with <code>web/build-standalone.ps1</code>
+      (see the README), then open that build.
+    </p>
+    <p id="nodata-error" class="error"></p>
+  </section>
+
+  <section class="card" id="step-game" hidden>
+    <h2><span class="step">1</span> Game</h2>
+    <div class="grid">
+      <label>Game <select id="game"></select></label>
+      <label id="dlc-label">DLC <select id="dlc"></select></label>
+      <label id="level-label">World <select id="level"></select></label>
+      <label id="current-level-label">Level <select id="current-level"></select></label>
+      <label id="preset-label">Shard
+        <select id="preset">
+          <option value="SURVIVAL_TOGETHER">Forest</option>
+          <option value="DST_CAVE">Caves</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section class="card" id="step-filters" hidden>
+    <h2><span class="step">2</span> Filters</h2>
+    <div class="pills" id="pills">
+      <button id="add-filter" class="add-filter">＋ Add filter</button>
+    </div>
+    <div id="pill-editor" class="pill-editor" hidden></div>
+    <div class="row search-row">
+      <label class="inline">Seeds
+        <select id="seed-mode">
+          <option value="random">Random</option>
+          <option value="range">In order</option>
+        </select>
+      </label>
+      <span id="range-inputs" class="row inline-group" hidden>
+        <label class="inline">from <input id="from" type="number" min="0" value="1"></label>
+        <label class="inline">to <input id="to" type="number" min="0" value="1000"></label>
+      </span>
+      <span id="random-inputs" class="row inline-group">
+        <label class="inline">how many <input id="count" type="number" min="1" value="1000"></label>
+        <label class="inline"><input id="endless" type="checkbox"> until stopped</label>
+      </span>
+      <label class="inline">Workers <input id="workers" type="number" min="1" max="32"></label>
+      <button id="search" class="primary">Search</button>
+      <button id="stop" disabled>Stop</button>
+      <span id="search-status" class="muted"></span>
+    </div>
+    <div class="progress"><div id="progress-bar"></div></div>
+  </section>
+
+  <div class="results" id="results" hidden>
+    <section class="card">
+      <h2>Leaderboard <span class="muted small">best matches for your filters</span></h2>
+      <div class="table-wrap"><table id="leaderboard"><thead></thead><tbody></tbody></table></div>
+    </section>
+    <section class="card">
+      <h2>All results <label class="inline small muted"><input id="only-matches" type="checkbox"> matches only</label>
+        <button id="download" class="small-btn" disabled>Download JSONL</button></h2>
+      <div class="table-wrap"><table id="all"><thead></thead><tbody></tbody></table></div>
+      <p id="all-note" class="muted small"></p>
+    </section>
+  </div>
+
+  <section class="card" id="world" hidden>
+    <div class="world-head">
+      <div>
+        <h2 id="world-title"></h2>
+        <p id="world-sub" class="muted"></p>
+      </div>
+      <div class="row">
+        <button id="zoom-out" title="Zoom out">−</button>
+        <button id="zoom-reset" title="Fit">Fit</button>
+        <button id="zoom-in" title="Zoom in">＋</button>
+        <button id="download-savedata">Savedata</button>
+      </div>
+    </div>
+    <div class="world-body">
+      <div class="map-col">
+        <div class="map-wrap" id="map-wrap">
+          <canvas id="map"></canvas>
+          <div id="tooltip" class="tooltip" hidden></div>
+        </div>
+        <p class="muted small">Scroll to zoom, drag to move. ★ is the spawn point. Hover an icon for its name.</p>
+      </div>
+      <div class="side-col">
+        <input id="legend-filter" type="search" placeholder="Find on map…">
+        <div id="legend" class="legend"></div>
+        <h3>Tasks</h3>
+        <ul id="tasks" class="tasks"></ul>
+      </div>
+    </div>
+  </section>
+
+  <dialog id="picker" class="picker">
+    <div class="picker-head">
+      <input id="picker-search" type="search" placeholder="Search everything…" autocomplete="off">
+      <button id="picker-close" title="Close">✕</button>
+    </div>
+    <nav class="tabs" id="picker-tabs"></nav>
+    <div id="picker-list" class="picker-list"></div>
+    <p id="picker-note" class="muted small picker-note"></p>
+  </dialog>
+
+  <footer class="muted small foot">
+    Not affiliated with Klei Entertainment. Don't Starve, Don't Starve Together and their artwork are Klei's.
+    Source: <a href="https://github.com/barratt/dontstarve-worldgen">github.com/barratt/dontstarve-worldgen</a> (AGPL-3.0).
+  </footer>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

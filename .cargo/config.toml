@@ -1,0 +1,19 @@
+# WebAssembly build (cargo build --target wasm32-unknown-emscripten --features web).
+# Emscripten links the generator into a module the browser page and Node can
+# load; the user's game files are mounted into its virtual filesystem.
+[target.wasm32-unknown-emscripten]
+rustflags = [
+    "-C", "link-arg=-sMODULARIZE=1",
+    "-C", "link-arg=-sEXPORT_NAME=createDsWorldgen",
+    "-C", "link-arg=-sENVIRONMENT=web,worker,node",
+    "-C", "link-arg=-sEXPORTED_FUNCTIONS=_dsw_generate,_dsw_free,_dsw_check_filter,_dsw_embedded,_dsw_assets,_main",
+    "-C", "link-arg=-sEXPORTED_RUNTIME_METHODS=ccall,UTF8ToString,FS,WORKERFS,NODEFS",
+    "-C", "link-arg=-lworkerfs.js",
+    "-C", "link-arg=-lnodefs.js",
+    "-C", "link-arg=-sDEFAULT_TO_CXX=1",
+    "-C", "link-arg=-sSUPPORT_LONGJMP=wasm",
+    "-C", "link-arg=-sFORCE_FILESYSTEM=1",
+    "-C", "link-arg=-sALLOW_MEMORY_GROWTH=1",
+    "-C", "link-arg=-sINITIAL_MEMORY=128MB",
+    "-C", "link-arg=-sSTACK_SIZE=16MB",
+]

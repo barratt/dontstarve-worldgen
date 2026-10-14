@@ -1,0 +1,33 @@
+[package]
+name = "ds-worldgen"
+version = "0.1.0"
+edition = "2021"
+description = "Don't Starve and Don't Starve Together world generator: the game's worldgen Lua on Lua 5.1.4 with a Rust WorldSim"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+sha2 = "0.10"
+miniz_oxide = "0.8"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+opt-level = 3
+debug = 1
+
+[features]
+# The WebAssembly entry points (src/bin/web.rs); see web/build.ps1.
+web = []
+
+[[bin]]
+name = "ds-worldgen"
+path = "src/main.rs"
+
+[[bin]]
+name = "ds-worldgen-web"
+path = "src/bin/web.rs"
+required-features = ["web"]

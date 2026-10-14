@@ -1,0 +1,40 @@
+# Publishes the site to GitHub Pages. The site is built locally by
+# web/publish.ps1 (web/build-standalone.ps1 -Public: the scripts world
+# generation loads, as stripped bytecode, plus icons and logos), attached to a
+# temporary release named "site", and deployed from there; it never enters
+# the repository's history. publish.ps1 removes the release afterwards.
+name: Pages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download the site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download site --repo "$GITHUB_REPOSITORY" --pattern site.zip
+          mkdir site
+          unzip -q site.zip -d site
+          touch site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

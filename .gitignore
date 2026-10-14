@@ -1,0 +1,7 @@
+/target
+# Standalone builds contain game scripts: local use only, never committed.
+/dist
+*.dswb
+.vscode/
+.idea/
+/dist-public
