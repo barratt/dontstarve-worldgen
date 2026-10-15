@@ -860,16 +860,46 @@ function drawMap() {
   drawCompass(ctx, W);
 }
 
-// North arrow, top right: the screen direction of the game's north.
+// The game's HUD compass (from the install), top right, turned so its N
+// points at the game's north; a drawn arrow when the art is not built in.
+function brandImage(name) {
+  const src = (assets.brand || {})[name];
+  if (!src) return null;
+  let img = images.get(src);
+  if (!img) {
+    img = new Image();
+    img.onload = () => scheduleDraw();
+    img.src = src;
+    images.set(src, img);
+  }
+  return img.complete && img.naturalWidth ? img : null;
+}
+
 function drawCompass(ctx, W) {
   const n = (northHeading() * Math.PI) / 180;
   // Facing heading n is facing north: world direction (-cos n, -sin n).
   const nu = -Math.cos(n), nv = -Math.sin(n);
   const { sn, cs } = axes();
   const dx = -sn * nu + cs * nv, dy = cs * nu + sn * nv;
-  const cx = W - 34, cy = 34, len = 20;
+  // Rotation that turns "up" into the screen direction of north.
+  const turn = Math.atan2(dy, dx) + Math.PI / 2;
+  const face = brandImage("compass_bg"), needle = brandImage("compass_needle");
+  const size = 76, cx = W - size / 2 - 10, cy = size / 2 + 10;
   ctx.save();
   ctx.translate(cx, cy);
+  if (face) {
+    ctx.save();
+    ctx.rotate(turn);
+    ctx.drawImage(face, -size / 2, -size / 2, size, size);
+    ctx.restore();
+    if (needle) {
+      const nh = size * 0.62, nw = (nh * needle.naturalWidth) / needle.naturalHeight;
+      ctx.rotate(turn);
+      ctx.drawImage(needle, -nw / 2, -nh / 2, nw, nh);
+    }
+    ctx.restore();
+    return;
+  }
   ctx.beginPath();
   ctx.arc(0, 0, 26, 0, Math.PI * 2);
   ctx.fillStyle = "rgba(234, 217, 181, 0.9)";
@@ -877,24 +907,19 @@ function drawCompass(ctx, W) {
   ctx.lineWidth = 2;
   ctx.strokeStyle = "#241a12";
   ctx.stroke();
-  const ang = Math.atan2(dy, dx);
-  ctx.rotate(ang);
+  ctx.rotate(turn);
   ctx.beginPath();
-  ctx.moveTo(len, 0);
-  ctx.lineTo(-len * 0.6, 7);
-  ctx.lineTo(-len * 0.35, 0);
-  ctx.lineTo(-len * 0.6, -7);
+  ctx.moveTo(0, -20);
+  ctx.lineTo(7, 12);
+  ctx.lineTo(0, 7);
+  ctx.lineTo(-7, 12);
   ctx.closePath();
   ctx.fillStyle = "#8e2a1c";
   ctx.fill();
-  ctx.restore();
-  ctx.save();
-  ctx.font = "bold 12px Georgia, serif";
   ctx.fillStyle = "#241a12";
+  ctx.font = "bold 11px Georgia, serif";
   ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  const lx = cx - (dx / Math.hypot(dx, dy)) * 2, ly = cy - (dy / Math.hypot(dx, dy)) * 2;
-  ctx.fillText("N", lx - (dx / Math.hypot(dx, dy)) * 12, ly - (dy / Math.hypot(dx, dy)) * 12);
+  ctx.fillText("N", 0, -22 + 30);
   ctx.restore();
 }
 
@@ -962,6 +987,14 @@ $("zoom-out").addEventListener("click", () => zoomAt(1 / 1.4, $("map-wrap").clie
 $("zoom-reset").addEventListener("click", () => { viewState.heading = 45; fitView(); });
 $("rotate-left").addEventListener("click", () => rotateBy(-45));
 $("rotate-right").addEventListener("click", () => rotateBy(45));
+document.addEventListener("keydown", (e) => {
+  if (!world || $("world").hidden || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || $("picker").open) return;
+  const key = e.key.toLowerCase();
+  if (key === "q") { rotateBy(-45); e.preventDefault(); }
+  if (key === "e") { rotateBy(45); e.preventDefault(); }
+});
 window.addEventListener("resize", () => world && scheduleDraw());
 
 function renderLegend() {

@@ -502,8 +502,8 @@ impl Bundle {
         Some(crate::ktex::crop(&img, uv))
     }
 
-    /// Branding for the page from the user's installs (title logos and the
-    /// hand-drawn button), stored as `brand/<name>.png`.
+    /// Branding for the page from the user's installs (title logos, the
+    /// hand-drawn button and the HUD compass), stored as `brand/<name>.png`.
     pub fn add_brand(&mut self, ds: Option<&Path>, dst: Option<&Path>) {
         let mut put = |name: &str, img: Option<crate::ktex::Image>| {
             if let Some(img) = img {
@@ -522,6 +522,15 @@ impl Bundle {
         }
         if let Some(game) = dst {
             put("title-dst", trimmed(Self::atlas_image(&game.join("data").join("images").join("frontscreen.xml"), "title.tex")));
+            // The HUD compass (face and needle), single-sprite animation atlases.
+            for (name, zip) in [("compass_bg", "compass_bg.zip"), ("compass_needle", "compass_needle.zip")] {
+                let img = crate::zipfile::Zip::open(&game.join("data").join("anim").join(zip))
+                    .ok()
+                    .and_then(|mut z| z.read("atlas-0.tex"))
+                    .and_then(|tex| crate::ktex::decode(&tex).ok())
+                    .map(|img| crate::ktex::trim(&crate::ktex::crop(&img, [0.0, 1.0, 0.0, 1.0])));
+                put(name, img);
+            }
         }
     }
 }
