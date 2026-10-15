@@ -35,6 +35,9 @@ pub struct Config {
 pub struct Output {
     pub savedata: Vec<u8>,
     pub log: Vec<String>,
+    /// Tile id -> GROUND name, read from the worldgen state (works whether
+    /// the scripts are source or compiled).
+    pub ground_names: std::collections::BTreeMap<u8, String>,
 }
 
 /// Engine strings observed in the worldgen state (build 578406).
@@ -178,8 +181,19 @@ pub fn run(config: &Config, worldsim: Rc<RefCell<dyn WorldSim>>) -> Result<Outpu
         Some(Value::Nil) | None => return Err("worldgen_main returned nil (generation failed after retries)".into()),
         Some(other) => return Err(format!("worldgen_main returned {other:?}")),
     };
+    let mut ground_names = std::collections::BTreeMap::new();
+    let pairs = lua.exec(b"local t = {} for k, v in pairs(rawget(_G, 'GROUND') or {}) do t[#t + 1] = { v, k } end return t", "=ground_names")?;
+    if let Some(Value::Arr(pairs)) = pairs.into_iter().next() {
+        for p in pairs {
+            if let Value::Arr(kv) = p {
+                if let (Some(Value::Num(id)), Some(Value::Str(name))) = (kv.first(), kv.get(1)) {
+                    ground_names.insert(*id as u8, String::from_utf8_lossy(name).into_owned());
+                }
+            }
+        }
+    }
     let log = log.borrow().clone();
-    Ok(Output { savedata, log })
+    Ok(Output { savedata, log, ground_names })
 }
 
 fn read(path: &std::path::Path) -> Result<Vec<u8>, String> {

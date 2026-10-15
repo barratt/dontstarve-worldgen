@@ -47,6 +47,8 @@ pub struct World {
     pub savedata: Vec<u8>,
     pub ms: f64,
     dst_tile_names: Option<BTreeMap<u16, String>>,
+    /// DS: GROUND names from the worldgen state.
+    ds_ground_names: Option<BTreeMap<u8, String>>,
 }
 
 pub struct Generator {
@@ -123,7 +125,7 @@ impl Generator {
                 capture_log: false,
             };
             let out = crate::dst_env::run(&config, Rc::new(RefCell::new(NativeDst::new())))?;
-            return Ok(World { seed, savedata: out.savedata, ms: elapsed_ms(started), dst_tile_names: Some(out.tile_names) });
+            return Ok(World { seed, savedata: out.savedata, ms: elapsed_ms(started), dst_tile_names: Some(out.tile_names), ds_ground_names: None });
         }
         let config = Config {
             data_root: self.game.join("data"),
@@ -136,7 +138,8 @@ impl Generator {
             capture_log: false,
         };
         let out = env::run(&config, Rc::new(RefCell::new(Native::new())))?;
-        Ok(World { seed, savedata: out.savedata, ms: elapsed_ms(started), dst_tile_names: None })
+        let names = (!out.ground_names.is_empty()).then_some(out.ground_names);
+        Ok(World { seed, savedata: out.savedata, ms: elapsed_ms(started), dst_tile_names: None, ds_ground_names: names })
     }
 
     /// Tile id -> ground name, for decoding the savedata tile grid (DS: the
@@ -144,7 +147,7 @@ impl Generator {
     pub fn tile_names(&self, world: &World) -> BTreeMap<u16, String> {
         match &world.dst_tile_names {
             Some(names) => names.clone(),
-            None => self.ground_names.iter().map(|(k, v)| (*k as u16, v.clone())).collect(),
+            None => world.ds_ground_names.as_ref().unwrap_or(&self.ground_names).iter().map(|(k, v)| (*k as u16, v.clone())).collect(),
         }
     }
 
@@ -153,7 +156,7 @@ impl Generator {
         let save = summary::parse_savedata(&world.savedata)?;
         let ctx = summary::Context {
             dlc: &self.dlc,
-            ground_names: Some(&self.ground_names),
+            ground_names: Some(world.ds_ground_names.as_ref().unwrap_or(&self.ground_names)),
             dst_tile_names: world.dst_tile_names.as_ref(),
             generator: serde_json::json!({
                 "name": "ds-worldgen",

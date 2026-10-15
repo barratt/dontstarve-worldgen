@@ -693,7 +693,7 @@ function tileColour(name) {
 
 let world = null;      // { summary, savedata, tile_names, positions, tiles: canvas, view }
 let shownPrefabs = new Set();
-const viewState = { scale: 1, ox: 0, oy: 0 };
+const viewState = { scale: 1, ox: 0, oy: 0, heading: 45 };
 let markers = [];
 
 function decodeTiles(savedata, w, h, dst) {
@@ -746,14 +746,48 @@ function tileLayer(r) {
   return { canvas, bounds };
 }
 
+// Map view in the game's own orientation. The game's camera at heading h
+// looks along world (-cos h, -sin h) (cameras/followcamera.lua), so on
+// screen, right = world (-sin h, cos h) and down = world (cos h, sin h).
+// Both games start at heading 45, where the map shows north up (DST's
+// compass reads heading - 45), the square world drawn as a diamond.
+// u, v are world x, z in tiles (one tile is 4 units); this mapping is its
+// own inverse.
 const toTile = (v, size) => v / 4 + size / 2;
+
+function axes() {
+  const h = (viewState.heading * Math.PI) / 180;
+  return { sn: Math.sin(h), cs: Math.cos(h) };
+}
+
+// Tiles (u, v) from the world centre -> screen pixels.
+function project(u, v) {
+  const { sn, cs } = axes(), s = viewState.scale;
+  return [viewState.ox + s * (-sn * u + cs * v), viewState.oy + s * (cs * u + sn * v)];
+}
+
+// Screen pixels -> tiles (u, v) from the world centre.
+function unproject(X, Y) {
+  const { sn, cs } = axes(), s = viewState.scale;
+  const dx = (X - viewState.ox) / s, dy = (Y - viewState.oy) / s;
+  return [-sn * dx + cs * dy, cs * dx + sn * dy];
+}
 
 function fitView() {
   const wrap = $("map-wrap");
   const b = world.layer.bounds;
-  viewState.scale = Math.min(wrap.clientWidth / b.w, wrap.clientHeight / b.h);
-  viewState.ox = (wrap.clientWidth - b.w * viewState.scale) / 2 - b.x * viewState.scale;
-  viewState.oy = (wrap.clientHeight - b.h * viewState.scale) / 2 - b.y * viewState.scale;
+  const { width: w, height: h } = world.summary.map;
+  const { sn, cs } = axes();
+  // Extent of the land's bounding box once rotated.
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const [tx, ty] of [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]]) {
+    const u = tx - w / 2, v = ty - h / 2;
+    const X = -sn * u + cs * v, Y = cs * u + sn * v;
+    x0 = Math.min(x0, X); x1 = Math.max(x1, X); y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+  }
+  viewState.scale = Math.min(wrap.clientWidth / (x1 - x0), wrap.clientHeight / (y1 - y0));
+  viewState.ox = wrap.clientWidth / 2 - ((x0 + x1) / 2) * viewState.scale;
+  viewState.oy = wrap.clientHeight / 2 - ((y0 + y1) / 2) * viewState.scale;
   scheduleDraw();
 }
 
@@ -762,6 +796,12 @@ function scheduleDraw() {
   if (drawPending || !world) return;
   drawPending = true;
   requestAnimationFrame(() => { drawPending = false; drawMap(); });
+}
+
+// Which world direction each game's compass calls north: DST's compass reads
+// camera heading - 45, DS's reads the heading itself.
+function northHeading() {
+  return world && world.summary.dlc === "dst" ? 45 : 0;
 }
 
 function drawMap() {
@@ -775,18 +815,22 @@ function drawMap() {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
-  const { scale, ox, oy } = viewState;
   const { width: w, height: h } = world.summary.map;
+  const { sn, cs } = axes(), s = viewState.scale;
+  // The tile layer, one pixel per tile, through the camera transform.
+  ctx.save();
+  ctx.setTransform(dpr * -sn * s, dpr * cs * s, dpr * cs * s, dpr * sn * s, dpr * viewState.ox, dpr * viewState.oy);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(world.layer.canvas, ox, oy, w * scale, h * scale);
-  const px = (x) => ox + toTile(x, w) * scale, py = (z) => oy + toTile(z, h) * scale;
-  const size = Math.max(14, Math.min(34, scale * 4));
+  ctx.drawImage(world.layer.canvas, -w / 2, -h / 2);
+  ctx.restore();
+  const at = (x, z) => project(x / 4, z / 4);
+  const size = Math.max(14, Math.min(34, s * 4));
   markers = [];
   for (const prefab of shownPrefabs) {
     const points = world.positions[prefab] || [];
     const img = iconImage(prefab);
     for (const [x, z] of points) {
-      const cx = px(x), cy = py(z);
+      const [cx, cy] = at(x, z);
       if (cx < -size || cy < -size || cx > W + size || cy > H + size) continue;
       if (img && img.complete && img.naturalWidth) ctx.drawImage(img, cx - size / 2, cy - size / 2, size, size);
       else {
@@ -801,7 +845,7 @@ function drawMap() {
     }
   }
   // Spawn star.
-  const sx = px(world.summary.spawn.x), sy = py(world.summary.spawn.z), r = Math.max(8, size * 0.45);
+  const [sx, sy] = at(world.summary.spawn.x, world.summary.spawn.z), r = Math.max(8, size * 0.45);
   ctx.beginPath();
   for (let k = 0; k < 10; k++) {
     const a = -Math.PI / 2 + (k * Math.PI) / 5, rr = k % 2 ? r * 0.45 : r;
@@ -813,6 +857,45 @@ function drawMap() {
   ctx.lineWidth = 2;
   ctx.fill();
   ctx.stroke();
+  drawCompass(ctx, W);
+}
+
+// North arrow, top right: the screen direction of the game's north.
+function drawCompass(ctx, W) {
+  const n = (northHeading() * Math.PI) / 180;
+  // Facing heading n is facing north: world direction (-cos n, -sin n).
+  const nu = -Math.cos(n), nv = -Math.sin(n);
+  const { sn, cs } = axes();
+  const dx = -sn * nu + cs * nv, dy = cs * nu + sn * nv;
+  const cx = W - 34, cy = 34, len = 20;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.beginPath();
+  ctx.arc(0, 0, 26, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(234, 217, 181, 0.9)";
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "#241a12";
+  ctx.stroke();
+  const ang = Math.atan2(dy, dx);
+  ctx.rotate(ang);
+  ctx.beginPath();
+  ctx.moveTo(len, 0);
+  ctx.lineTo(-len * 0.6, 7);
+  ctx.lineTo(-len * 0.35, 0);
+  ctx.lineTo(-len * 0.6, -7);
+  ctx.closePath();
+  ctx.fillStyle = "#8e2a1c";
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.font = "bold 12px Georgia, serif";
+  ctx.fillStyle = "#241a12";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const lx = cx - (dx / Math.hypot(dx, dy)) * 2, ly = cy - (dy / Math.hypot(dx, dy)) * 2;
+  ctx.fillText("N", lx - (dx / Math.hypot(dx, dy)) * 12, ly - (dy / Math.hypot(dx, dy)) * 12);
+  ctx.restore();
 }
 
 // Zoom and pan.
@@ -822,6 +905,19 @@ function zoomAt(factor, cx, cy) {
   viewState.ox = cx - (cx - viewState.ox) * f;
   viewState.oy = cy - (cy - viewState.oy) * f;
   viewState.scale = s;
+  scheduleDraw();
+}
+
+// Turn the view like the game's camera (45 degrees per step), around the
+// middle of the map view.
+function rotateBy(degrees) {
+  const wrap = $("map-wrap");
+  const cx = wrap.clientWidth / 2, cy = wrap.clientHeight / 2;
+  const [u, v] = unproject(cx, cy);
+  viewState.heading = (viewState.heading + degrees + 360) % 360;
+  const [px, py] = project(u, v);
+  viewState.ox += cx - px;
+  viewState.oy += cy - py;
   scheduleDraw();
 }
 $("map-wrap").addEventListener("wheel", (e) => {
@@ -863,7 +959,9 @@ $("map-wrap").addEventListener("pointermove", (e) => {
 $("map-wrap").addEventListener("pointerleave", () => { $("tooltip").hidden = true; });
 $("zoom-in").addEventListener("click", () => zoomAt(1.4, $("map-wrap").clientWidth / 2, $("map-wrap").clientHeight / 2));
 $("zoom-out").addEventListener("click", () => zoomAt(1 / 1.4, $("map-wrap").clientWidth / 2, $("map-wrap").clientHeight / 2));
-$("zoom-reset").addEventListener("click", fitView);
+$("zoom-reset").addEventListener("click", () => { viewState.heading = 45; fitView(); });
+$("rotate-left").addEventListener("click", () => rotateBy(-45));
+$("rotate-right").addEventListener("click", () => rotateBy(45));
 window.addEventListener("resize", () => world && scheduleDraw());
 
 function renderLegend() {
@@ -921,6 +1019,7 @@ async function showWorld(seed) {
   $("legend-filter").value = "";
   renderLegend();
   $("world").scrollIntoView({ behavior: "smooth", block: "start" });
+  viewState.heading = 45;
   requestAnimationFrame(fitView);
 }
 $("download-savedata").addEventListener("click", () => world && download(`seed-${world.summary.seed}-savedata.lua`, world.savedata, "text/plain"));
