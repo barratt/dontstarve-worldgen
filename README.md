@@ -86,7 +86,10 @@ installed games (below), then:
    - Don't Starve: the DLC (base game, Reign of Giants, Shipwrecked, Hamlet)
      and the world (survival, caves or ruins, adventure chapters,
      Shipwrecked, volcano, Hamlet).
-   - Don't Starve Together: forest or caves.
+   - Don't Starve Together: forest or caves, and the World Size setting
+     (Small, Medium, Large or Huge; Large is the game's default). It
+     changes the world generated, as it does in the game; it isn't a
+     filter.
 2. **Filters.**
    - **Add a filter:** "Add filter" lists everything the world type
      contains, with the game's icons and names. It has tabs for points of
@@ -215,6 +218,8 @@ World options:
 - **Don't Starve Together.**
   - `--preset SURVIVAL_TOGETHER|DST_CAVE`: the default settings, as the game
     produces them.
+  - `--world-size small|medium|large|huge`: the game's World Size setting
+    (default `large`, which the game stores as `default`).
   - `--gen-parameters FILE`: any world-generation parameter string the game
     passes to its generator.
 

@@ -38,6 +38,27 @@ pub struct WorldOptions {
     pub preset: Option<String>,
     /// DST: a GEN_PARAMETERS string, instead of a preset.
     pub gen_parameters: Option<String>,
+    /// DST: the World Size setting, small, medium, large or huge (default
+    /// large). Replaces the preset's `world_size` override.
+    pub world_size: Option<String>,
+}
+
+/// The game's World Size choices and the value each writes into the
+/// worldgen overrides (customize.lua: "Large" is stored as "default").
+pub const DST_WORLD_SIZES: &[(&str, &str)] = &[("small", "small"), ("medium", "medium"), ("large", "default"), ("huge", "huge")];
+
+/// Sets `overrides.world_size` in a DST GEN_PARAMETERS string, keeping the
+/// rest of it byte for byte.
+fn with_world_size(gen_parameters: &str, size: &str) -> Result<String, String> {
+    let value = DST_WORLD_SIZES
+        .iter()
+        .find(|(name, value)| name.eq_ignore_ascii_case(size) || value.eq_ignore_ascii_case(size))
+        .map(|(_, value)| *value)
+        .ok_or_else(|| format!("unknown world size {size} (small, medium, large, huge)"))?;
+    let key = "\"world_size\":\"";
+    let start = gen_parameters.find(key).ok_or("GEN_PARAMETERS has no world_size override")? + key.len();
+    let end = start + gen_parameters[start..].find('"').ok_or("unterminated world_size")?;
+    Ok(format!("{}{value}{}", &gen_parameters[..start], &gen_parameters[end..]))
 }
 
 /// One generated world: the game's savedata, the wall time and (DST) the
@@ -109,6 +130,10 @@ impl Generator {
                         )
                     })?
             }
+        };
+        let gen_parameters = match &opts.world_size {
+            Some(size) => with_world_size(&gen_parameters, size)?,
+            None => gen_parameters,
         };
         Ok(Generator { game: game.to_path_buf(), dst: true, dlc: "dst".into(), gen_parameters, ground_names: Default::default() })
     }

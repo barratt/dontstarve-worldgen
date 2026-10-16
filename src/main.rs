@@ -19,7 +19,8 @@ USAGE:
       DS:  --dlc base|rog|sw|hamlet (default rog), --level survival|shipwrecked|
            volcano|porkland|cave|adventure (default per DLC), --current-level N
            (cave 1 caves / 2 ruins, adventure 1..5), --choices '{ lua table }'.
-      DST: --preset SURVIVAL_TOGETHER|DST_CAVE or --gen-parameters FILE.
+      DST: --preset SURVIVAL_TOGETHER|DST_CAVE or --gen-parameters FILE,
+           --world-size small|medium|large|huge (default large).
 
   ds-worldgen search (--game <dir> | --dst <dir>) --seeds A..B [--where EXPR]
                      [--jobs N] [--output FILE]  (+ the generate world options)
@@ -113,6 +114,7 @@ fn generator(args: &[String]) -> Result<Generator, String> {
         choices: flag(args, "--choices"),
         preset: flag(args, "--preset"),
         gen_parameters,
+        world_size: flag(args, "--world-size"),
     };
     if let Some(dst) = flag(args, "--dst") {
         return Generator::dst(Path::new(&dst), &opts);

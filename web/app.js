@@ -115,7 +115,12 @@ function fillSelect(sel, options, value) {
 const game = () => $("game").value;
 
 function worldOptions() {
-  if (game() === "dst") return { preset: $("preset").value };
+  if (game() === "dst") {
+    const opts = { preset: $("preset").value };
+    // Large is the game's default: leave it out so default worlds keep their cache key.
+    if ($("world-size").value !== "large") opts.world_size = $("world-size").value;
+    return opts;
+  }
   const opts = { dlc: $("dlc").value, level: $("level").value };
   if (!$("current-level-label").hidden) opts.current_level = Number($("current-level").value);
   return opts;
@@ -128,6 +133,7 @@ function setupGame() {
   $("dlc-label").hidden = !ds;
   $("level-label").hidden = !ds;
   $("preset-label").hidden = ds;
+  $("world-size-label").hidden = ds;
   if (ds) {
     const dlcs = ["base", ...embedded.ds.dlcs];
     fillSelect($("dlc"), dlcs.map((d) => [d, DLC_NAMES[d]]), dlcs.includes("rog") ? "rog" : dlcs[0]);
@@ -170,6 +176,7 @@ $("dlc").addEventListener("change", () => { updateLevels(); worldChanged(); });
 $("level").addEventListener("change", () => { updateCurrentLevel(); worldChanged(); });
 $("current-level").addEventListener("change", worldChanged);
 $("preset").addEventListener("change", worldChanged);
+$("world-size").addEventListener("change", worldChanged);
 
 // ---------------------------------------------------------------- assets: icons and names
 
@@ -259,7 +266,7 @@ let filters = [];
 let editing = null;
 let nextId = 1;
 
-const STATS = { land_tiles: "Land tiles", nodes: "Rooms", roads: "Roads", width: "Map width (tiles)" };
+const STATS = { land_tiles: "Land tiles", nodes: "Rooms", roads: "Roads" };
 
 function newFilter(kind, key) {
   const f = { id: nextId++, kind, key, want: true, mode: "min", n: 1, within: null };
