@@ -309,6 +309,11 @@ Limits:
   `./web/build.ps1 -Emsdk <path to emsdk>`. This writes
   `web/ds-worldgen-web.js` and `web/ds_worldgen_web.wasm`.
 
+## Community
+
+Questions, bug reports and seed finds are welcome on the
+[MapsNotIncluded Discord](https://discord.gg/3vhCpp6PNq).
+
 ## Licence
 
 GNU Affero General Public License v3.0 or later (see `LICENSE`).
