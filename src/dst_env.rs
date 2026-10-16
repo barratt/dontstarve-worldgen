@@ -108,6 +108,7 @@ fn run_inner(config: &DstConfig, worldsim: Rc<RefCell<dyn WorldSim>>) -> Result<
                 ctx.push(&Value::Nil);
                 return Ok(1);
             };
+            let source = crate::lua_patch::apply(&source);
             if let Err(msg) = ctx.load_chunk(&source, &chunkname) {
                 ctx.push(&Value::str(&msg));
             }
@@ -263,13 +264,8 @@ package.path = "scripts\\?.lua;scriptlibs\\?.lua"
 
     // WorldSim: save-string methods locally, everything else native.
     let save = Rc::new(RefCell::new(Vec::<u8>::new()));
-    for &method in DST_METHODS {
-        let ws = worldsim.clone();
-        lua.set_table_fn("WorldSim", method, Box::new(move |ctx: &mut Ctx| {
-            let args = ctx.args_from(2)?;
-            let results = ws.borrow_mut().call(method, &args)?;
-            Ok(ctx.push_all(&results))
-        }));
+    for &method in DST_METHODS.iter().chain(crate::lua_patch::HELPERS) {
+        crate::env::bind_worldsim(&mut lua, Some("WorldSim"), method, method, worldsim.clone(), 2);
     }
     {
         let s = save.clone();
@@ -300,15 +296,11 @@ package.path = "scripts\\?.lua;scriptlibs\\?.lua"
         lua.set_table_fn("WorldSim", "FinalizeSaveString", Box::new(|_ctx: &mut Ctx| Ok(0)));
     }
     for &name in ENGINE_FUNCTIONS {
-        let ws = worldsim.clone();
-        let traced = format!("${name}");
-        lua.set_global_fn(name, Box::new(move |ctx: &mut Ctx| {
-            let args = ctx.args()?;
-            let results = ws.borrow_mut().call(&traced, &args)?;
-            Ok(ctx.push_all(&results))
-        }));
+        crate::env::bind_worldsim(&mut lua, None, name, crate::env::engine_method(name), worldsim.clone(), 1);
     }
 
+    unsafe { crate::lua::ffi::ds_register_helpers(lua.raw()) };
+    lua.exec(crate::lua_patch::PRELUDE.as_bytes(), "=dsw_prelude")?;
     let (st, _) = vfs.read("scripts/stacktrace.lua").ok_or("scripts/stacktrace.lua not found in scripts.zip")?;
     lua.exec(&st, "scripts/stacktrace.lua")?;
     let (main, _) = vfs.read("scripts/worldgen_main.lua").ok_or("scripts/worldgen_main.lua not found in scripts.zip")?;

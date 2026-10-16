@@ -11,6 +11,7 @@ pub mod env;
 pub mod filter;
 pub mod ktex;
 pub mod lua;
+pub mod lua_patch;
 pub mod msvc_fmt;
 pub mod pack;
 pub mod pcg;

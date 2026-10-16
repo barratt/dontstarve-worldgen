@@ -18,7 +18,7 @@ pub mod voronoi;
 use std::collections::BTreeMap;
 
 use crate::value::Value;
-use crate::worldsim::WorldSim;
+use crate::worldsim::{helpers, WorldSim};
 use boostmap::BoostMap;
 use tiles::TileGrid;
 
@@ -158,6 +158,93 @@ impl Native {
                 self.map = BoostMap::default();
                 Ok(vec![])
             }
+            // city_builder.lua testTile(pt, types): all nine tiles around pt
+            // are >= 2 and (with types) the centre is one of them; nothing
+            // (the script runs its own) when types is not a plain list.
+            // border_finder.lua makeborder's inner loop: from the loop variable
+            // z (Lua's for: z + step, while <= limit), the next z whose tile
+            // passes testtile and has a neighbour that does not; nothing at
+            // the end. (z, limit, TILE_SCALE, x, WIDTH, HEIGHT, valid_tile_types)
+            "DswBorderNext" => self.tiles_op(|t| {
+                let (mut z, limit, ts, x, w, h) = (num(args, 0)?, num(args, 1)?, num(args, 2)?, num(args, 3)?, num(args, 4)?, num(args, 5)?);
+                let Some(Value::Arr(valid)) = args.get(6) else { return Err("DswBorderNext: tile list expected".into()) };
+                let valid: Vec<f64> = valid.iter().map(|e| if let Value::Num(n) = e { *n } else { f64::NAN }).collect();
+                let test = |tx: f64, tz: f64| {
+                    let tile = points::get_tile(t, lua_int(tx.floor()), lua_int(tz.floor())) as f64;
+                    valid.iter().any(|&v| v == tile)
+                };
+                let tilex = ((w / 2.0) + 0.5 + (x / ts)).floor();
+                loop {
+                    z = z + ts;
+                    if !(z <= limit) {
+                        return Ok(vec![]);
+                    }
+                    let tilez = ((h / 2.0) + 0.5 + (z / ts)).floor();
+                    if test(tilex, tilez) && (!test(tilex + 1.0, tilez) || !test(tilex - 1.0, tilez) || !test(tilex, tilez + 1.0) || !test(tilex, tilez - 1.0)) {
+                        return Ok(vec![Value::Num(z)]);
+                    }
+                }
+            }),
+            "DswTestTile" => self.tiles_op(|t| {
+                let (px, pz) = (num(args, 0)?, num(args, 1)?);
+                let types: Option<Vec<f64>> = match args.get(2) {
+                    None | Some(Value::Nil) => None,
+                    Some(Value::Arr(v)) => Some(v.iter().map(|e| if let Value::Num(n) = e { *n } else { f64::NAN }).collect()),
+                    _ => return Ok(vec![]),
+                };
+                let mut test = true;
+                let mut i = 0;
+                for dx in [-1.0, 0.0, 1.0] {
+                    for dz in [-1.0, 0.0, 1.0] {
+                        i += 1;
+                        let tile = points::get_tile(t, lua_int(px + dx), lua_int(pz + dz)) as f64;
+                        if tile < 2.0 {
+                            return Ok(vec![Value::Bool(false)]);
+                        }
+                        if i == 5 {
+                            if let Some(types) = &types {
+                                if !types.iter().any(|&tt| tt == tile) {
+                                    test = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(vec![Value::Bool(test)])
+            }),
+            "DswFindLayoutPositions" | "DswGetPoints" => self.tiles_op(|t| {
+                // (kind, value, ...): a predicate tagged by lua_patch.rs.
+                let (kind, value) = (num(args, 0)?, args.get(1));
+                // Kind 4 (Hamlet's checkTriangle): {OCEAN_DEEP, minDistance, x1, y1, ...}.
+                let tri: Vec<f64> = match value {
+                    Some(Value::Arr(v)) => v.iter().map(|e| if let Value::Num(n) = e { *n } else { f64::NAN }).collect(),
+                    _ => Vec::new(),
+                };
+                if kind as i32 == 4 && tri.len() < 2 {
+                    return Err("DswPred kind 4 without data".into());
+                }
+                let pred = |g: f64, x: f64, y: f64| match kind as i32 {
+                    1 => tiles::is_water(lua_int(g) as u8),
+                    2 => tiles::is_water(lua_int(g) as u8) && !tiles::is_shore(lua_int(g) as u8),
+                    4 => {
+                        g == tri[0]
+                            && tri[2..].chunks(2).all(|p| {
+                                let (dx, dy) = (x - p[0], y - p[1]);
+                                !(dx * dx + dy * dy < tri[1] * tri[1])
+                            })
+                    }
+                    _ => matches!(value, Some(Value::Num(v)) if *v == g),
+                };
+                // checkTile
+                let ok = |x: f64, y: f64| !points::is_tile_reserved(t, lua_int(x), lua_int(y)) && pred(helpers::Grid::get(t, x, y), x, y);
+                let a = |i: usize| num(args, i);
+                let r = if method == "DswGetPoints" {
+                    helpers::get_points(&ok, a(2)?, a(3)?, a(4)?, a(5)?, a(6)?, a(7)?, a(8)?)
+                } else {
+                    helpers::find_layout_positions(&ok, a(2)?, a(3)?, a(4)?, a(5)?, a(6)?, a(7)?, a(8)?)
+                };
+                Ok(vec![nums(r)])
+            }),
             "GetWorldSize" => Ok(vec![Value::Num(self.map.width.trunc()), Value::Num(self.map.height.trunc())]),
             "GetTile" => self.tiles_op(|t| Ok(vec![Value::Num(points::get_tile(t, lua_int(num(args, 0)?), lua_int(num(args, 1)?)) as f64)])),
             "SetTile" => self.tiles_mut(|t| {
@@ -284,7 +371,9 @@ impl Native {
                 let k = tiles::gaussian_kernel(ks, sigma);
                 let b = tiles::blur(&a, w, h, &k, ks, 1);
                 let a = tiles::blur(&b, w, h, &k, 1, ks);
-                Ok(vec![Value::ZeroBased(a.into_iter().map(|v| v as f64).collect()), Value::Num(w as f64), Value::Num(h as f64)])
+                let a: Vec<f64> = a.into_iter().map(|v| v as f64).collect();
+                helpers::remember_blended(&a);
+                Ok(vec![Value::ZeroBased(a), Value::Num(w as f64), Value::Num(h as f64)])
             })(),
             "AddIslandRegionMapping" => (|| {
                 // std::map insert keeps the first value for a duplicate key.
@@ -504,4 +593,223 @@ impl WorldSim for Native {
             None => Err(format!("WorldSim:{method} is not implemented natively yet")),
         }
     }
+
+    fn fast(&mut self, method: crate::worldsim::Fast, a: &[f64]) -> Option<crate::worldsim::FastOut> {
+        use crate::worldsim::{Fast, FastOut};
+        let n = |i: usize| a.get(i).copied().unwrap_or(0.0);
+        Some(match method {
+            Fast::GetTile => FastOut::Num(points::get_tile(self.tiles.as_ref()?, lua_int(n(0)), lua_int(n(1))) as f64),
+            Fast::SetTile => {
+                let f = a.get(3).copied().map(lua_int).unwrap_or(0);
+                points::set_tile(self.tiles.as_mut()?, lua_int(n(0)), lua_int(n(1)), lua_int(n(2)), f);
+                FastOut::Nothing
+            }
+            Fast::IsTileReserved => FastOut::Bool(points::is_tile_reserved(self.tiles.as_ref()?, lua_int(n(0)), lua_int(n(1)))),
+            Fast::IsWater => FastOut::Bool(tiles::is_water(lua_int(n(0)) as u8)),
+            Fast::IsShore => FastOut::Bool(tiles::is_shore(lua_int(n(0)) as u8)),
+            Fast::IsLand => FastOut::Bool(is_land(n(0))),
+            Fast::Perlin => FastOut::Num(tiles::perlin01(n(0), n(1), n(2))),
+            // The helpers need every argument (lua_patch.rs always passes them).
+            _ if a.len() < helpers::arity(method) => return None,
+            Fast::FillGroundType => {
+                let lined = |g: f64| is_land(g) || g == a[7] || g == a[8];
+                helpers::fill(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+                FastOut::Nothing
+            }
+            Fast::PlaceGroundType => {
+                let lined = |g: f64| is_land(g) || g == a[8] || g == a[9];
+                let (x, y) = helpers::place(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], None);
+                FastOut::Num2(x, y)
+            }
+            Fast::PlaceFilledGroundType => {
+                let lined = |g: f64| is_land(g) || g == a[10] || g == a[11];
+                let (x, y) = helpers::place(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], Some((a[8], a[9])));
+                FastOut::Num2(x, y)
+            }
+            Fast::SquareFill => {
+                let lined = |g: f64| is_land(g) || g == a[6] || g == a[7];
+                helpers::square_fill(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5]);
+                FastOut::Nothing
+            }
+            Fast::SimplexNoise2d => FastOut::Num(helpers::simplex_noise_2d(a[0], a[1], a[2], a[3])),
+            Fast::IsCloseToWater => {
+                let t = self.tiles.as_ref()?;
+                FastOut::Bool(helpers::ring_any(a[0], a[1], a[2], |x, y| tiles::is_water(lua_int(helpers::Grid::get(t, x, y)) as u8)))
+            }
+            Fast::IsCloseToLand => {
+                let t = self.tiles.as_ref()?;
+                FastOut::Bool(helpers::ring_any(a[0], a[1], a[2], |x, y| is_land(helpers::Grid::get(t, x, y))))
+            }
+            Fast::IsSurroundedByWater => {
+                let t = self.tiles.as_ref()?;
+                FastOut::Bool(!helpers::ring_any(a[0], a[1], a[2], |x, y| !tiles::is_water(lua_int(helpers::Grid::get(t, x, y)) as u8)))
+            }
+            Fast::IsSurroundedByWaterOrInvalid => {
+                let t = self.tiles.as_ref()?;
+                let ok = |g: f64| tiles::is_water(lua_int(g) as u8) || g == a[3];
+                FastOut::Bool(!helpers::ring_any(a[0], a[1], a[2], |x, y| !ok(helpers::Grid::get(t, x, y))))
+            }
+            // water.lua's checkTile with a tagged predicate (kind 1-3, see DswFindLayoutPositions).
+            Fast::CheckTile => FastOut::Bool(check_tile(self.tiles.as_ref()?, a[0], a[1], a[2], a[3])?),
+            // PopulateWaterType's distribute loop: the next x in x0..=xmax on
+            // row y that passes checkTile, or nothing.
+            Fast::NextTile => {
+                let t = self.tiles.as_ref()?;
+                let (mut x, y, xmax) = (a[0], a[1], a[2]);
+                check_tile(t, x, y, a[3], a[4])?;
+                while x <= xmax {
+                    if check_tile(t, x, y, a[3], a[4])? {
+                        return Some(FastOut::Num(x));
+                    }
+                    x = x + 1.0;
+                }
+                FastOut::Nothing
+            }
+            // AddShoreline (width, height, INVALID, MANGROVE, MANGROVE_SHORE,
+            // OCEAN_CORAL, OCEAN_CORAL_SHORE, OCEAN_SHORE), with spawnutil's
+            // IsSurroundedByWaterOrInvalid(x, y, 1).
+            Fast::AddShoreline => {
+                let t = self.tiles.as_mut()?;
+                let (width, height, invalid) = (a[0], a[1], a[2]);
+                let ok = |g: f64| tiles::is_water(lua_int(g) as u8) || g == invalid;
+                let mut y = 0.0;
+                while y <= height - 1.0 {
+                    let mut x = 0.0;
+                    while x <= width - 1.0 {
+                        let ground = helpers::Grid::get(t, x, y);
+                        let tt: &TileGrid = t;
+                        if tiles::is_water(lua_int(ground) as u8) && helpers::ring_any(x, y, 1.0, |x, y| !ok(helpers::Grid::get(tt, x, y))) {
+                            let to = if ground == a[3] { a[4] } else if ground == a[5] { a[6] } else { a[7] };
+                            helpers::Grid::set(t, x, y, to);
+                        }
+                        x += 1.0;
+                    }
+                    y += 1.0;
+                }
+                FastOut::Nothing
+            }
+            Fast::RemoveSingleWaterTile => {
+                let t = self.tiles.as_mut()?;
+                let (width, height) = (a[0], a[1]);
+                let mut y = 0.0;
+                while y <= height - 1.0 {
+                    let mut x = 0.0;
+                    while x <= width - 1.0 {
+                        let tt: &TileGrid = t;
+                        let land = |x: f64, y: f64| 0.0 < x && x < width && 0.0 < y && y < height && is_land(helpers::Grid::get(tt, x, y));
+                        let ground = helpers::Grid::get(tt, x, y);
+                        if tiles::is_water(lua_int(ground) as u8) && land(x - 1.0, y) && land(x + 1.0, y) && land(x, y - 1.0) && land(x, y + 1.0) {
+                            let from = if x + 1.0 < width { helpers::Grid::get(tt, x + 1.0, y) } else { helpers::Grid::get(tt, x - 1.0, y) };
+                            helpers::Grid::set(t, x, y, from);
+                        }
+                        x += 1.0;
+                    }
+                    y += 1.0;
+                }
+                FastOut::Nothing
+            }
+            // (mode 0, OCEAN_CORAL, MANGROVE, 0, 0, width, height, tile, offset, depth)
+            Fast::GroundFillPass if a[0] == 0.0 => {
+                let lined = |g: f64| is_land(g) || g == a[1] || g == a[2];
+                helpers::ground_fill_pass(self.tiles.as_mut()?, &lined, a[5], a[6], a[7], a[8], a[9]);
+                FastOut::Nothing
+            }
+            // (mode 0, .., width, height, radius, OCEAN_SHALLOW, IMPASSABLE):
+            // IsCloseToTileType(IMPASSABLE) or IsCloseToWater.
+            Fast::SquareFillPass if a[0] == 0.0 => {
+                let lined = |g: f64| is_land(g) || g == a[1] || g == a[2];
+                let (r, imp) = (a[7], a[9]);
+                let close = |t: &TileGrid, x: f64, y: f64| {
+                    helpers::ring_any(x, y, r, |x, y| helpers::Grid::get(t, x, y) == imp) || helpers::ring_any(x, y, r, |x, y| tiles::is_water(lua_int(helpers::Grid::get(t, x, y)) as u8))
+                };
+                helpers::square_fill_pass(self.tiles.as_mut()?, &lined, close, a[5], a[6], r, a[8]);
+                FastOut::Nothing
+            }
+            // (mode 0, .., width, height, depthShallow, depthMed, OCEAN_SHALLOW,
+            // OCEAN_MEDIUM[, fillOffset, fillDepth])
+            Fast::WaterlinePass if a[0] == 0.0 => {
+                let lined = |g: f64| is_land(g) || g == a[1] || g == a[2];
+                let filled = if a.len() >= 13 { Some((a[11], a[12])) } else { None };
+                helpers::waterline_pass(self.tiles.as_mut()?, &lined, a[5], a[6], a[7], a[8], a[9], a[10], filled);
+                FastOut::Nothing
+            }
+            Fast::NoisePass => {
+                helpers::noise_pass(self.tiles.as_mut()?, a)?;
+                FastOut::Nothing
+            }
+            // water.lua do_blend's loop, over the three maps just blended (cm, g, el):
+            // (width, height, mindist, maxdist, final shallow, medium, coral, grave,
+            // MANGROVE, IMPASSABLE, OCEAN_CORAL, OCEAN_SHALLOW, OCEAN_MEDIUM,
+            // OCEAN_SHIPGRAVEYARD, OCEAN_DEEP).
+            Fast::BlendPass => {
+                let t = self.tiles.as_mut()?;
+                let (width, height) = (a[0], a[1]);
+                let [cm, gm, el] = helpers::last_blended((width * height) as usize)?;
+                let mut y = 0.0;
+                while y <= height - 1.0 {
+                    let mut x = 0.0;
+                    while x <= width - 1.0 {
+                        let tile = helpers::Grid::get(t, x, y);
+                        if (tiles::is_water(lua_int(tile) as u8) && tile != a[8]) || tile == a[9] {
+                            let falloff = helpers::edge_falloff(x, y, width, height, a[2], a[3], 0.0, 1.0);
+                            let i = (y * width + x) as usize;
+                            let (ellevel, cmlevel, glevel) = (el[i], cm[i] * falloff, gm[i] * falloff);
+                            let to = if ellevel > a[4] {
+                                if cmlevel > a[6] && tile == a[10] { a[10] } else { a[11] }
+                            } else if ellevel > a[5] {
+                                a[12]
+                            } else if glevel > a[7] {
+                                a[13]
+                            } else {
+                                a[14]
+                            };
+                            helpers::Grid::set(t, x, y, to);
+                        }
+                        x += 1.0;
+                    }
+                    y += 1.0;
+                }
+                FastOut::Nothing
+            }
+            Fast::IsCloseToTileType => {
+                let t = self.tiles.as_ref()?;
+                FastOut::Bool(helpers::ring_any(a[0], a[1], a[2], |x, y| helpers::Grid::get(t, x, y) == a[3]))
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// WorldSim:IsLand.
+fn is_land(ground: f64) -> bool {
+    let t = lua_int(ground);
+    t > 1 && t != 0x32 && !tiles::is_water(t as u8)
+}
+
+/// WorldSim:GetTile / SetTile for the native helpers.
+impl helpers::Grid for TileGrid {
+    fn get(&self, x: f64, y: f64) -> f64 {
+        points::get_tile(self, lua_int(x), lua_int(y)) as f64
+    }
+    fn set(&mut self, x: f64, y: f64, ground: f64) {
+        points::set_tile(self, lua_int(x), lua_int(y), lua_int(ground), 0);
+    }
+}
+
+/// water.lua's checkTile(x, y, checkFn) for a predicate lua_patch.rs
+/// tagged with `kind` 1-3 (and `value` for 3); None for other kinds.
+fn check_tile(t: &TileGrid, x: f64, y: f64, kind: f64, value: f64) -> Option<bool> {
+    let pred = match kind as i32 {
+        k @ 1..=3 => k,
+        _ => return None,
+    };
+    if points::is_tile_reserved(t, lua_int(x), lua_int(y)) {
+        return Some(false);
+    }
+    let g = helpers::Grid::get(t, x, y);
+    Some(match pred {
+        1 => tiles::is_water(lua_int(g) as u8),
+        2 => tiles::is_water(lua_int(g) as u8) && !tiles::is_shore(lua_int(g) as u8),
+        _ => g == value,
+    })
 }

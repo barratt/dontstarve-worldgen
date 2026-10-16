@@ -659,7 +659,10 @@ impl Bundle {
                 continue;
             }
             if let Some(source) = data {
-                *source = compile_wasm32(source, key)?;
+                // Precompiled chunks cannot be matched by lua_patch at load
+                // time, so its native stand-ins are applied before compiling.
+                let patched = crate::lua_patch::apply(source).into_owned();
+                *source = compile_wasm32(&patched, key)?;
             }
         }
         Ok(())

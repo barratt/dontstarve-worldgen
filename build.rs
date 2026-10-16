@@ -10,7 +10,9 @@ fn main() {
     let emscripten = std::env::var("TARGET").map(|t| t.contains("emscripten")).unwrap_or(false);
     let wasm_eh = |b: &mut cc::Build| {
         if emscripten {
-            b.flag("-fwasm-exceptions").flag("-sSUPPORT_LONGJMP=wasm");
+            // SIMD128 lets clang vectorise; IEEE lane arithmetic gives the
+            // same results as scalar code.
+            b.flag("-fwasm-exceptions").flag("-sSUPPORT_LONGJMP=wasm").flag("-msimd128");
         }
     };
     let lua = "vendor/lua-5.1.4/src";

@@ -88,6 +88,7 @@ pub fn run(config: &Config, worldsim: Rc<RefCell<dyn WorldSim>>) -> Result<Outpu
                 return Ok(1);
             };
             let source = crate::vfs::read_file(&resolved.path)?;
+            let source = crate::lua_patch::apply(&source);
             if let Err(msg) = ctx.load_chunk(&source, &resolved.chunkname) {
                 ctx.push(&Value::str(&msg));
             }
@@ -150,26 +151,17 @@ pub fn run(config: &Config, worldsim: Rc<RefCell<dyn WorldSim>>) -> Result<Outpu
     }));
 
     // WorldSim: a table of methods; the first argument (self) is dropped.
-    for &method in METHODS {
-        let ws = worldsim.clone();
-        lua.set_table_fn("WorldSim", method, Box::new(move |ctx: &mut Ctx| {
-            let args = ctx.args_from(2)?;
-            let results = ws.borrow_mut().call(method, &args)?;
-            Ok(ctx.push_all(&results))
-        }));
+    for &method in METHODS.iter().chain(crate::lua_patch::HELPERS) {
+        bind_worldsim(&mut lua, Some("WorldSim"), method, method, worldsim.clone(), 2);
     }
     for &name in ENGINE_FUNCTIONS {
-        let ws = worldsim.clone();
-        let traced = format!("${name}");
-        lua.set_global_fn(name, Box::new(move |ctx: &mut Ctx| {
-            let args = ctx.args()?;
-            let results = ws.borrow_mut().call(&traced, &args)?;
-            Ok(ctx.push_all(&results))
-        }));
+        bind_worldsim(&mut lua, None, name, engine_method(name), worldsim.clone(), 1);
     }
 
     lua.exec(br#"package.path = "data\\scripts\\?.lua;data\\scriptlibs\\?.lua""#, "=ds-worldgen")?;
 
+    unsafe { crate::lua::ffi::ds_register_helpers(lua.raw()) };
+    lua.exec(crate::lua_patch::PRELUDE.as_bytes(), "=dsw_prelude")?;
     let stacktrace = vfs.resolve("scripts/stacktrace.lua").ok_or("scripts/stacktrace.lua not found")?;
     lua.exec(&read(&stacktrace.path)?, "@scripts/stacktrace.lua")?;
     let main = vfs.resolve("scripts/worldgen_main.lua").ok_or("scripts/worldgen_main.lua not found")?;
@@ -252,5 +244,68 @@ return json.encode(p)
     match lua.exec(script.as_bytes(), "=gen_parameters")?.into_iter().next() {
         Some(Value::Str(s)) => String::from_utf8(s).map_err(|e| e.to_string()),
         other => Err(format!("gen_parameters: unexpected {other:?}")),
+    }
+}
+
+/// Registers a WorldSim method (or engine function) on `table` (or as a
+/// global). Per-tile methods get a fast path (WorldSim::fast) for calls
+/// whose arguments are all numbers. `first` is the stack index of the
+/// first real argument.
+pub fn bind_worldsim(lua: &mut Lua, table: Option<&str>, name: &str, method: &'static str, ws: Rc<RefCell<dyn WorldSim>>, first: i32) {
+    let slow_ws = ws.clone();
+    let slow: crate::lua::Callback = Box::new(move |ctx: &mut Ctx| {
+        let args = ctx.args_from(first)?;
+        let results = slow_ws.borrow_mut().call(method, &args)?;
+        Ok(ctx.push_all(&results))
+    });
+    let Some(m) = crate::worldsim::Fast::of(method) else {
+        match table {
+            Some(t) => lua.set_table_fn(t, name, slow),
+            None => lua.set_global_fn(name, slow),
+        }
+        return;
+    };
+    let data = Box::new(FastData { ws, method: m });
+    match table {
+        Some(t) => lua.set_table_fast_fn(t, name, fast_call, data, first, slow),
+        None => lua.set_global_fast_fn(name, fast_call, data, first, slow),
+    }
+}
+
+struct FastData {
+    ws: Rc<RefCell<dyn WorldSim>>,
+    method: crate::worldsim::Fast,
+}
+
+unsafe extern "C" fn fast_call(ud: *mut std::ffi::c_void, args: *const f64, n: std::ffi::c_int, out: *mut f64) -> std::ffi::c_int {
+    let d = &*(ud as *const FastData);
+    // A WorldSim call already in progress (one that called back into Lua)
+    // keeps the general path and its error.
+    let Ok(mut ws) = d.ws.try_borrow_mut() else { return 0 };
+    match ws.fast(d.method, std::slice::from_raw_parts(args, n as usize)) {
+        Some(crate::worldsim::FastOut::Num(v)) => {
+            *out = v;
+            1
+        }
+        Some(crate::worldsim::FastOut::Bool(b)) => {
+            *out = b as u8 as f64;
+            2
+        }
+        Some(crate::worldsim::FastOut::Nothing) => 3,
+        Some(crate::worldsim::FastOut::Num2(x, y)) => {
+            *out = x;
+            *out.add(1) = y;
+            4
+        }
+        None => 0,
+    }
+}
+
+/// The WorldSim method name of an engine function ("$" + name).
+pub fn engine_method(name: &str) -> &'static str {
+    match name {
+        "perlin" => "$perlin",
+        "getminimumradius" => "$getminimumradius",
+        other => Box::leak(format!("${other}").into_boxed_str()),
     }
 }

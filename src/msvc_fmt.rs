@@ -134,6 +134,12 @@ fn sci_digits(v: f64, n: usize) -> (Vec<u8>, i32) {
 /// Whether the exact decimal value has the digit 5 in 18th place followed by
 /// nothing: a tie between two 17-digit roundings.
 fn is_exact_tie_after_17(v: f64) -> bool {
+    // Rounded to 18 digits, an exact tie still ends in 5; anything else is
+    // rejected without the (much slower) long expansions below.
+    let (digits, _) = sci_digits(v, 18);
+    if digits[17] != b'5' {
+        return false;
+    }
     // A double's exact decimal expansion has at most 767 significant digits.
     let (digits, _) = sci_digits(v, 40);
     if digits[17] != b'5' || digits[18..].iter().any(|&c| c != b'0') {

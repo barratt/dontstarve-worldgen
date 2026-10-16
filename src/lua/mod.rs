@@ -20,6 +20,7 @@ pub struct Lua {
     state: *mut lua_State,
     // Keeps registered closures alive for the life of the state.
     callbacks: Vec<*mut Callback>,
+    fast_data: Vec<Box<dyn std::any::Any>>,
 }
 
 pub struct Ctx {
@@ -80,7 +81,7 @@ impl Ctx {
     pub fn load_chunk(&mut self, source: &[u8], chunkname: &str) -> Result<(), String> {
         let name = CString::new(chunkname).map_err(|e| e.to_string())?;
         unsafe {
-            let status = luaL_loadbuffer(self.l, source.as_ptr() as *const _, source.len(), name.as_ptr());
+            let status = load_cached(self.l, source, &name);
             if status != 0 {
                 let msg = Value::from_stack(self.l, -1)?.to_display();
                 lua_settop(self.l, -2);
@@ -152,10 +153,18 @@ unsafe extern "C" fn dispatch(l: *mut lua_State, ud: *mut c_void) -> c_int {
 
 impl Lua {
     pub fn new() -> Lua {
-        let state = unsafe { luaL_newstate() };
-        assert!(!state.is_null(), "luaL_newstate failed");
+        // Lua allocates through Rust's global allocator, so a binary can
+        // pick a faster one (the CLI uses mimalloc).
+        let state = unsafe {
+            let s = lua_newstate(rust_alloc, std::ptr::null_mut());
+            if !s.is_null() {
+                lua_atpanic(s, lua_panic);
+            }
+            s
+        };
+        assert!(!state.is_null(), "lua_newstate failed");
         unsafe { luaL_openlibs(state) };
-        Lua { state, callbacks: Vec::new() }
+        Lua { state, callbacks: Vec::new(), fast_data: Vec::new() }
     }
 
     pub fn raw(&self) -> *mut lua_State {
@@ -166,6 +175,44 @@ impl Lua {
         let boxed: *mut Callback = Box::into_raw(Box::new(f));
         self.callbacks.push(boxed);
         unsafe { ds_push_rust_function(self.state, dispatch, boxed as *mut c_void) };
+    }
+
+    /// Pushes a function with a fast path: `fast` gets the numeric
+    /// arguments from stack index `first` (see ds_push_fast_function in
+    /// shim.c) and `slow` handles every other call. `data` is what
+    /// `fast` receives, and lives as long as the state.
+    fn push_fast<T: 'static>(&mut self, fast: FastFn, data: Box<T>, first: i32, slow: Callback) {
+        let ud = &*data as *const T as *mut c_void;
+        self.fast_data.push(data);
+        let boxed: *mut Callback = Box::into_raw(Box::new(slow));
+        self.callbacks.push(boxed);
+        unsafe { ds_push_fast_function(self.state, fast, ud, first, dispatch, boxed as *mut c_void) };
+    }
+
+    pub fn set_global_fast_fn<T: 'static>(&mut self, name: &str, fast: FastFn, data: Box<T>, first: i32, slow: Callback) {
+        let n = CString::new(name).unwrap();
+        self.push_fast(fast, data, first, slow);
+        unsafe { lua_setfield(self.state, LUA_GLOBALSINDEX, n.as_ptr()) };
+    }
+
+    /// `table_name.field = f` (as set_table_fn) with a fast path.
+    pub fn set_table_fast_fn<T: 'static>(&mut self, table_name: &str, field: &str, fast: FastFn, data: Box<T>, first: i32, slow: Callback) {
+        let t = CString::new(table_name).unwrap();
+        let k = CString::new(field).unwrap();
+        unsafe {
+            lua_getfield(self.state, LUA_GLOBALSINDEX, t.as_ptr());
+            if lua_type(self.state, -1) != LUA_TTABLE {
+                lua_settop(self.state, -2);
+                lua_createtable(self.state, 0, 0);
+                lua_pushvalue(self.state, -1);
+                lua_setfield(self.state, LUA_GLOBALSINDEX, t.as_ptr());
+            }
+        }
+        self.push_fast(fast, data, first, slow);
+        unsafe {
+            lua_setfield(self.state, -2, k.as_ptr());
+            lua_settop(self.state, -2);
+        }
     }
 
     pub fn set_global(&mut self, name: &str, v: &Value) {
@@ -232,4 +279,72 @@ impl Drop for Lua {
             unsafe { drop(Box::from_raw(cb)) };
         }
     }
+}
+
+/// lua_Alloc on Rust's global allocator (16-byte aligned blocks).
+unsafe extern "C" fn rust_alloc(_ud: *mut c_void, ptr: *mut c_void, osize: usize, nsize: usize) -> *mut c_void {
+    use std::alloc::{alloc, dealloc, realloc, Layout};
+    const ALIGN: usize = 16;
+    if nsize == 0 {
+        if !ptr.is_null() {
+            dealloc(ptr as *mut u8, Layout::from_size_align_unchecked(osize, ALIGN));
+        }
+        return std::ptr::null_mut();
+    }
+    if ptr.is_null() {
+        return alloc(Layout::from_size_align_unchecked(nsize, ALIGN)) as *mut c_void;
+    }
+    realloc(ptr as *mut u8, Layout::from_size_align_unchecked(osize, ALIGN), nsize) as *mut c_void
+}
+
+/// An error outside any protected call (luaL_newstate's handler prints it
+/// and exits).
+unsafe extern "C" fn lua_panic(l: *mut lua_State) -> c_int {
+    let msg = Value::from_stack(l, -1).map(|v| v.to_display()).unwrap_or_default();
+    panic!("unprotected Lua error: {msg}");
+}
+
+thread_local! {
+    /// Bytecode of every chunk compiled on this thread, keyed by chunk name
+    /// and source hash. Reloading dumped bytecode is several times faster
+    /// than parsing, and the next seed loads the same ~1100 files.
+    static CHUNK_CACHE: std::cell::RefCell<std::collections::HashMap<(Box<[u8]>, u64), Box<[u8]>>> = Default::default();
+}
+
+pub fn source_hash(s: &[u8]) -> u64 {
+    // FNV-1a over 8-byte words; collisions are additionally guarded by the chunk name.
+    let mut h: u64 = 0xcbf29ce484222325 ^ s.len() as u64;
+    let mut chunks = s.chunks_exact(8);
+    for c in &mut chunks {
+        h = (h ^ u64::from_le_bytes(c.try_into().unwrap())).wrapping_mul(0x100000001b3);
+    }
+    for &b in chunks.remainder() {
+        h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+unsafe extern "C" fn dump_writer(_l: *mut lua_State, p: *const c_void, sz: usize, ud: *mut c_void) -> c_int {
+    (*(ud as *mut Vec<u8>)).extend_from_slice(std::slice::from_raw_parts(p as *const u8, sz));
+    0
+}
+
+unsafe fn load_cached(l: *mut lua_State, source: &[u8], name: &CString) -> c_int {
+    if std::env::var_os("DSW_NO_CHUNK_CACHE").is_some() || source.first() == Some(&0x1b) {
+        return luaL_loadbuffer(l, source.as_ptr() as *const _, source.len(), name.as_ptr());
+    }
+    let key = (name.as_bytes().into(), source_hash(source));
+    let hit = CHUNK_CACHE.with(|c| c.borrow().get(&key).map(|b| (b.as_ptr(), b.len())));
+    if let Some((p, n)) = hit {
+        // Entries are never removed, so the buffer outlives the call.
+        return luaL_loadbuffer(l, p as *const _, n, name.as_ptr());
+    }
+    let status = luaL_loadbuffer(l, source.as_ptr() as *const _, source.len(), name.as_ptr());
+    if status == 0 {
+        let mut out = Vec::new();
+        if lua_dump(l, dump_writer, &mut out as *mut Vec<u8> as *mut c_void) == 0 {
+            CHUNK_CACHE.with(|c| c.borrow_mut().insert(key, out.into_boxed_slice()));
+        }
+    }
+    status
 }

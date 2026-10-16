@@ -155,6 +155,11 @@ fn grad(h: usize, x: f64, y: f64, z: f64) -> f64 {
 
 /// Improved Noise (0x55D910), remapped to [0,1].
 pub fn perlin01(x: f64, y: f64, z: f64) -> f64 {
+    // z = 0 (every 2D use): fade(0) = 0, so the z + 1 half adds only
+    // 0 * (B - A), a zero (B - A is bounded), whose sign (n + 1) * 0.5 drops.
+    if z == 0.0 {
+        return perlin01_z0(x, y);
+    }
     let (fx, fy, fz) = (x.floor(), y.floor(), z.floor());
     let (xi, yi, zi) = ((fx as i64 & 255) as usize, (fy as i64 & 255) as usize, (fz as i64 & 255) as usize);
     let (x, y, z) = (x - fx, y - fy, z - fz);
@@ -198,6 +203,9 @@ pub fn gaussian_kernel(size: usize, sigma: f32) -> Vec<f32> {
 
 /// Separable blur pass (0x4A4B30): zero padding, no renormalisation.
 pub fn blur(src: &[f32], w: usize, h: usize, k: &[f32], kx: usize, ky: usize) -> Vec<f32> {
+    if kx == 1 || ky == 1 {
+        return blur_1d(src, w, h, k, kx, ky);
+    }
     let (rx, ry) = ((kx / 2) as i64, (ky / 2) as i64);
     let mut dst = vec![0f32; w * h];
     for y in 0..h as i64 {
@@ -213,6 +221,57 @@ pub fn blur(src: &[f32], w: usize, h: usize, k: &[f32], kx: usize, ky: usize) ->
                 }
             }
             dst[(y * w as i64 + x) as usize] = sum;
+        }
+    }
+    dst
+}
+
+fn perlin01_z0(x: f64, y: f64) -> f64 {
+    let (fx, fy) = (x.floor(), y.floor());
+    let (xi, yi) = ((fx as i64 & 255) as usize, (fy as i64 & 255) as usize);
+    let (x, y) = (x - fx, y - fy);
+    let (u, v) = (fade(x), fade(y));
+    let a = pp(xi) + yi;
+    let aa = pp(a);
+    let ab = pp(a + 1);
+    let b = pp(xi + 1) + yi;
+    let ba = pp(b);
+    let bb = pp(b + 1);
+    let n = lerp(v, lerp(u, grad(pp(aa), x, y, 0.0), grad(pp(ba), x - 1.0, y, 0.0)), lerp(u, grad(pp(ab), x, y - 1.0, 0.0), grad(pp(bb), x - 1.0, y - 1.0, 0.0)));
+    (n + 1.0) * 0.5
+}
+
+/// blur for a 1 x k or k x 1 kernel: each output still adds its in-range
+/// taps in order with the same roundings, but taps run in the outer loop
+/// so the per-pixel loop has no branches.
+fn blur_1d(src: &[f32], w: usize, h: usize, k: &[f32], kx: usize, ky: usize) -> Vec<f32> {
+    let mut dst = vec![0f32; w * h];
+    if ky == 1 {
+        let r = (kx / 2) as i64;
+        for y in 0..h {
+            let (row, acc) = (&src[y * w..(y + 1) * w], &mut dst[y * w..(y + 1) * w]);
+            for (dx, &kv) in k.iter().enumerate().take(kx) {
+                let off = dx as i64 - r;
+                let (lo, hi) = ((-off).max(0) as usize, ((w as i64) - off).clamp(0, w as i64) as usize);
+                for x in lo..hi {
+                    acc[x] = (acc[x] as f64 + row[(x as i64 + off) as usize] as f64 * kv as f64) as f32;
+                }
+            }
+        }
+    } else {
+        let r = (ky / 2) as i64;
+        for y in 0..h {
+            let acc = &mut dst[y * w..(y + 1) * w];
+            for (dy, &kv) in k.iter().enumerate().take(ky) {
+                let yy = y as i64 - r + dy as i64;
+                if yy < 0 || yy >= h as i64 {
+                    continue;
+                }
+                let row = &src[yy as usize * w..(yy as usize + 1) * w];
+                for x in 0..w {
+                    acc[x] = (acc[x] as f64 + row[x] as f64 * kv as f64) as f32;
+                }
+            }
         }
     }
     dst

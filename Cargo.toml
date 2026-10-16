@@ -1,6 +1,6 @@
 [package]
 name = "ds-worldgen"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Don't Starve and Don't Starve Together world generator: the game's worldgen Lua on Lua 5.1.4 with a Rust WorldSim"
 license = "AGPL-3.0-or-later"
@@ -11,6 +11,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 sha2 = "0.10"
 miniz_oxide = "0.8"
+
+# The CLI allocates with mimalloc (Lua allocations go through Rust's global
+# allocator); the WebAssembly build keeps Emscripten's.
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
 
 [build-dependencies]
 cc = "1"

@@ -11,6 +11,7 @@ pub struct lua_State {
 pub type lua_Number = f64;
 pub type lua_Integer = isize;
 pub type RustFn = unsafe extern "C" fn(*mut lua_State, *mut c_void) -> c_int;
+pub type FastFn = unsafe extern "C" fn(ud: *mut c_void, args: *const f64, n: c_int, out: *mut f64) -> c_int;
 
 pub const LUA_REGISTRYINDEX: c_int = -10000;
 pub const LUA_GLOBALSINDEX: c_int = -10002;
@@ -30,6 +31,9 @@ extern "C" {
     pub fn luaL_newstate() -> *mut lua_State;
     pub fn lua_close(l: *mut lua_State);
     pub fn luaL_openlibs(l: *mut lua_State);
+    pub fn lua_dump(l: *mut lua_State, writer: unsafe extern "C" fn(*mut lua_State, *const c_void, usize, *mut c_void) -> c_int, data: *mut c_void) -> c_int;
+    pub fn lua_newstate(f: unsafe extern "C" fn(*mut c_void, *mut c_void, usize, usize) -> *mut c_void, ud: *mut c_void) -> *mut lua_State;
+    pub fn lua_atpanic(l: *mut lua_State, f: unsafe extern "C" fn(*mut lua_State) -> c_int) -> *mut c_void;
     pub fn luaL_loadbuffer(l: *mut lua_State, buf: *const c_char, sz: usize, name: *const c_char) -> c_int;
 
     pub fn lua_gettop(l: *mut lua_State) -> c_int;
@@ -65,6 +69,8 @@ extern "C" {
 
     // src/c/shim.c
     pub fn ds_push_rust_function(l: *mut lua_State, f: RustFn, ud: *mut c_void);
+    pub fn ds_register_helpers(l: *mut lua_State);
+    pub fn ds_push_fast_function(l: *mut lua_State, fast: FastFn, fast_ud: *mut c_void, first: c_int, f: RustFn, ud: *mut c_void);
     pub fn ds_pcall_traceback(l: *mut lua_State, nargs: c_int, nresults: c_int) -> c_int;
     pub fn ds_set_number2int_round(on: c_int);
     // src/c/crt.c

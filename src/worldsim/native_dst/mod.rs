@@ -275,6 +275,19 @@ impl NativeDst {
             }),
             "GetEncodedMap" => self.get_encoded_map(),
             "GenerateBlendedMap" => self.generate_blended_map(args),
+            // ocean_gen.lua GetRandomWaterPoints' get_points after its
+            // math.random calls, with its checkTile(x, y, populating_tile).
+            // (adj_width, adj_height, start_x, start_y, edge_dist, need, inc, tile)
+            "DswOceanGetPoints" => self.tiles().map(|t| {
+                let tile = num(args, 7);
+                let ok = |x: f64, y: f64| {
+                    let (ix, iy) = (toint(x), toint(y));
+                    let reserved = !t.d.in_range(ix, iy) || t.d.hi(iy as usize * t.d.w + ix as usize) & HI_RESERVED != 0;
+                    !reserved && crate::worldsim::helpers::Grid::get(t, x, y) == tile
+                };
+                let r = crate::worldsim::helpers::get_points(&ok, num(args, 0), num(args, 1), num(args, 2), num(args, 3), num(args, 4), num(args, 5), num(args, 6));
+                vec![Value::Arr(r.into_iter().map(Value::Num).collect())]
+            }),
             "GetPointsForSite" => (|| {
                 let id = text(args, 0)?;
                 let t = self.tiles.as_ref().ok_or("GetPointsForSite before ConvertToTileMap")?;
@@ -630,7 +643,9 @@ impl NativeDst {
         }
         let buf: Vec<f32> = t.t.cells.iter().map(|c| lv.get(c).copied().unwrap_or(def)).collect();
         let out = blend::blur(&buf, w, h, k, sigma);
-        Ok(vec![Value::ZeroBased(out.into_iter().map(|v| v as f64).collect()), Value::Num(w as f64), Value::Num(h as f64)])
+        let out: Vec<f64> = out.into_iter().map(|v| v as f64).collect();
+        crate::worldsim::helpers::remember_blended(&out);
+        Ok(vec![Value::ZeroBased(out), Value::Num(w as f64), Value::Num(h as f64)])
     }
 }
 
@@ -656,6 +671,192 @@ impl WorldSim for NativeDst {
         match NativeDst::call(self, method, args) {
             Some(r) => r,
             None => Err(format!("WorldSim:{method} is not implemented natively for DST yet")),
+        }
+    }
+
+    fn fast(&mut self, method: crate::worldsim::Fast, a: &[f64]) -> Option<crate::worldsim::FastOut> {
+        use crate::worldsim::{helpers, Fast, FastOut};
+        let n = |i: usize| a.get(i).copied().unwrap_or(0.0);
+        Some(match method {
+            Fast::GetTile => {
+                let t = self.tiles.as_ref()?;
+                let (x, y) = (toint(n(0)), toint(n(1)));
+                FastOut::Num(if t.t.in_range(x, y) { t.t.cells[y as usize * t.w() + x as usize] } else { tgm::INVALID_TILE } as f64)
+            }
+            Fast::IsTileReserved => {
+                let t = self.tiles.as_ref()?;
+                let (x, y) = (toint(n(0)), toint(n(1)));
+                FastOut::Bool(!t.d.in_range(x, y) || t.d.hi(y as usize * t.d.w + x as usize) & HI_RESERVED != 0)
+            }
+            Fast::SetTile => {
+                let t = self.tiles.as_mut()?;
+                let (x, y, tile, f) = (toint(n(0)), toint(n(1)), toint(n(2)), toint(n(3)));
+                if t.t.in_range(x, y) {
+                    let i = y as usize * t.w() + x as usize;
+                    t.t.cells[i] = tile as u16;
+                    let hi = (t.d.hi(i) & 0xBF) | (((f & 1) as u8) << 6);
+                    t.d.set_hi(i, hi);
+                }
+                FastOut::Nothing
+            }
+            Fast::Perlin => FastOut::Num(crate::worldsim::native::tiles::perlin01(n(0), n(1), n(2))),
+            // (mode 1, land range x4, width, height, tile, offset, depth)
+            Fast::GroundFillPass if a.len() >= 10 && a[0] == 1.0 => {
+                let lined = |g: f64| helpers::in_group(g, &a[1..5]);
+                helpers::ground_fill_pass(self.tiles.as_mut()?, &lined, a[5], a[6], a[7], a[8], a[9]);
+                FastOut::Nothing
+            }
+            // (mode 1, land x4, width, height, radius, OCEAN_COASTAL,
+            // IMPASSABLE, impassable x4, ocean x4): IsCloseToImpassable or IsCloseToWater.
+            Fast::SquareFillPass if a.len() >= 18 && a[0] == 1.0 => {
+                let lined = |g: f64| helpers::in_group(g, &a[1..5]);
+                let r = a[7];
+                let close = |t: &Tiles, x: f64, y: f64| {
+                    helpers::ring_any(x, y, r, |x, y| {
+                        let g = helpers::Grid::get(t, x, y);
+                        g == a[9] || helpers::in_group(g, &a[10..14])
+                    }) || helpers::ring_any(x, y, r, |x, y| helpers::in_group(helpers::Grid::get(t, x, y), &a[14..18]))
+                };
+                helpers::square_fill_pass(self.tiles.as_mut()?, &lined, close, a[5], a[6], r, a[8]);
+                FastOut::Nothing
+            }
+            // PopulateWaterType's distribute loop: the next x in x0..=xmax on row
+            // y whose tile is `tile`, or nothing. (x0, y, xmax, tile)
+            Fast::NextTileEq if a.len() >= 4 => {
+                let t = self.tiles.as_ref()?;
+                let (mut x, y, xmax, tile) = (a[0], a[1], a[2], a[3]);
+                while x <= xmax {
+                    if helpers::Grid::get(t, x, y) == tile {
+                        return Some(FastOut::Num(x));
+                    }
+                    x = x + 1.0;
+                }
+                FastOut::Nothing
+            }
+            // AddShoreline: (width, height, ocean x4, IMPASSABLE, impassable x4,
+            // INVALID, OCEAN_BRINEPOOL, OCEAN_COASTAL_SHORE), with ocean_gen's
+            // IsSurroundedByWaterOrInvalid(x, y, 1).
+            Fast::OceanAddShoreline if a.len() >= 14 => {
+                let t = self.tiles.as_mut()?;
+                let (width, height) = (a[0], a[1]);
+                let ok = |g: f64| helpers::in_group(g, &a[2..6]) || g == a[6] || helpers::in_group(g, &a[7..11]) || g == a[11];
+                let mut y = 0.0;
+                while y <= height - 1.0 {
+                    let mut x = 0.0;
+                    while x <= width - 1.0 {
+                        let ground = helpers::Grid::get(t, x, y);
+                        let tt: &Tiles = t;
+                        if helpers::in_group(ground, &a[2..6]) && helpers::ring_any(x, y, 1.0, |x, y| !ok(helpers::Grid::get(tt, x, y))) && ground != a[12] {
+                            helpers::Grid::set(t, x, y, a[13]);
+                        }
+                        x += 1.0;
+                    }
+                    y += 1.0;
+                }
+                FastOut::Nothing
+            }
+            Fast::NoisePass if a.len() >= 4 => {
+                helpers::noise_pass(self.tiles.as_mut()?, a)?;
+                FastOut::Nothing
+            }
+            // ocean_gen.lua do_blend's loop over (cm, g, el): (width, height,
+            // mindist, maxdist, final shallow, medium, coral, grave, ocean range
+            // x4, IMPASSABLE, OCEAN_WATERLOG, OCEAN_BRINEPOOL, OCEAN_COASTAL,
+            // OCEAN_SWELL, OCEAN_HAZARDOUS, OCEAN_ROUGH).
+            Fast::OceanBlendPass if a.len() >= 19 => {
+                let t = self.tiles.as_mut()?;
+                let (width, height) = (a[0], a[1]);
+                let [cm, gm, el] = helpers::last_blended((width * height) as usize)?;
+                let mut y = 0.0;
+                while y <= height - 1.0 {
+                    let mut x = 0.0;
+                    while x <= width - 1.0 {
+                        let tile = helpers::Grid::get(t, x, y);
+                        if helpers::in_group(tile, &a[8..12]) || tile == a[12] {
+                            let falloff = helpers::edge_falloff(x, y, width, height, a[2], a[3], 0.0, 1.0);
+                            let i = (y * width + x) as usize;
+                            let (ellevel, cmlevel, glevel) = (el[i], cm[i] * falloff, gm[i] * falloff);
+                            let to = if ellevel > a[4] {
+                                if tile == a[13] {
+                                    a[13]
+                                } else if cmlevel > a[6] && tile == a[14] {
+                                    a[14]
+                                } else {
+                                    a[15]
+                                }
+                            } else if ellevel > a[5] {
+                                a[16]
+                            } else if glevel > a[7] {
+                                a[17]
+                            } else {
+                                a[18]
+                            };
+                            helpers::Grid::set(t, x, y, to);
+                        }
+                        x += 1.0;
+                    }
+                    y += 1.0;
+                }
+                FastOut::Nothing
+            }
+            Fast::SimplexNoise2d if a.len() >= 4 => FastOut::Num(helpers::simplex_noise_2d(a[0], a[1], a[2], a[3])),
+            // The helpers need every argument (lua_patch.rs always passes them).
+            _ if a.len() < helpers::arity(method) => return None,
+            Fast::OceanFillGroundType => {
+                let lined = |g: f64| helpers::in_group(g, &a[7..11]);
+                helpers::fill(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+                FastOut::Nothing
+            }
+            Fast::OceanPlaceGroundType => {
+                let lined = |g: f64| helpers::in_group(g, &a[8..12]);
+                let (x, y) = helpers::place(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], None);
+                FastOut::Num2(x, y)
+            }
+            Fast::OceanPlaceFilledGroundType => {
+                let lined = |g: f64| helpers::in_group(g, &a[10..14]);
+                let (x, y) = helpers::place(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], Some((a[8], a[9])));
+                FastOut::Num2(x, y)
+            }
+            Fast::OceanSquareFill => {
+                let lined = |g: f64| helpers::in_group(g, &a[6..10]);
+                helpers::square_fill(self.tiles.as_mut()?, &lined, a[0], a[1], a[2], a[3], a[4], a[5]);
+                FastOut::Nothing
+            }
+            // (x, y, radius, group range x4)
+            Fast::OceanIsCloseToGroup => {
+                let t = self.tiles.as_ref()?;
+                FastOut::Bool(helpers::ring_any(a[0], a[1], a[2], |x, y| helpers::in_group(helpers::Grid::get(t, x, y), &a[3..7])))
+            }
+            // (x, y, radius, IMPASSABLE, impassable range x4)
+            Fast::OceanIsCloseToImpassable => {
+                let t = self.tiles.as_ref()?;
+                let imp = |g: f64| g == a[3] || helpers::in_group(g, &a[4..8]);
+                FastOut::Bool(helpers::ring_any(a[0], a[1], a[2], |x, y| imp(helpers::Grid::get(t, x, y))))
+            }
+            // (x, y, radius, ocean range x4, IMPASSABLE, impassable range x4, INVALID)
+            Fast::OceanIsSurroundedByWaterOrInvalid => {
+                let t = self.tiles.as_ref()?;
+                let ok = |g: f64| helpers::in_group(g, &a[3..7]) || g == a[7] || helpers::in_group(g, &a[8..12]) || g == a[12];
+                FastOut::Bool(!helpers::ring_any(a[0], a[1], a[2], |x, y| !ok(helpers::Grid::get(t, x, y))))
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// WorldSim:GetTile / SetTile (three arguments) for the native helpers.
+impl crate::worldsim::helpers::Grid for Tiles {
+    fn get(&self, x: f64, y: f64) -> f64 {
+        let (x, y) = (toint(x), toint(y));
+        (if self.t.in_range(x, y) { self.t.cells[y as usize * self.w() + x as usize] } else { tgm::INVALID_TILE }) as f64
+    }
+    fn set(&mut self, x: f64, y: f64, ground: f64) {
+        let (x, y, tile) = (toint(x), toint(y), toint(ground));
+        if self.t.in_range(x, y) {
+            let i = y as usize * self.w() + x as usize;
+            self.t.cells[i] = tile as u16;
+            let hi = self.d.hi(i) & 0xBF;
+            self.d.set_hi(i, hi);
         }
     }
 }

@@ -571,7 +571,29 @@ impl DstMap {
 }
 
 /// Lattice rasteriser 0x140439280 (radius 20.0f): float32, no W/H bound.
+/// Results are remembered by their exact inputs (worldgen asks for the
+/// same site several times).
 pub fn lattice_points(poly: &[P2], sx: f32, sy: f32) -> Vec<P2> {
+    type Key = (Vec<(u32, u32)>, u32, u32);
+    thread_local! {
+        static MEMO: std::cell::RefCell<HashMap<Key, Vec<P2>>> = Default::default();
+    }
+    let key: Key = (poly.iter().map(|p| (p.0.to_bits(), p.1.to_bits())).collect(), sx.to_bits(), sy.to_bits());
+    if let Some(hit) = MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let out = lattice_points_uncached(poly, sx, sy);
+    MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() > 4096 {
+            m.clear();
+        }
+        m.insert(key, out.clone());
+    });
+    out
+}
+
+fn lattice_points_uncached(poly: &[P2], sx: f32, sy: f32) -> Vec<P2> {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, -f32::MAX, -f32::MAX);
     for &(x, y) in poly {
         if !(y > miny) {

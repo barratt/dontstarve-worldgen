@@ -26,6 +26,9 @@ pub fn kernel(k: usize, sigma: f32) -> Vec<f32> {
 
 /// Conv 0x140438910: zero padding, sequential float accumulation.
 pub fn conv(src: &[f32], w: usize, h: usize, kern: &[f32], kw: usize, kh: usize) -> Vec<f32> {
+    if kw == 1 || kh == 1 {
+        return conv_1d(src, w, h, kern, kw, kh);
+    }
     let (rx, ry) = ((kw / 2) as i64, (kh / 2) as i64);
     let mut dst = vec![0f32; w * h];
     for y in 0..h as i64 {
@@ -52,4 +55,40 @@ pub fn blur(buf: &[f32], w: usize, h: usize, k: i32, sigma: f32) -> Vec<f32> {
     let kern = kernel(k, sigma);
     let tmp = conv(buf, w, h, &kern, k, 1);
     conv(&tmp, w, h, &kern, 1, k)
+}
+
+/// conv for a 1 x k or k x 1 kernel: each output still adds its in-range
+/// taps in order, but taps run in the outer loop so the per-pixel loop has
+/// no branches.
+fn conv_1d(src: &[f32], w: usize, h: usize, kern: &[f32], kw: usize, kh: usize) -> Vec<f32> {
+    let mut dst = vec![0f32; w * h];
+    if kh == 1 {
+        let r = (kw / 2) as i64;
+        for y in 0..h {
+            let (row, acc) = (&src[y * w..(y + 1) * w], &mut dst[y * w..(y + 1) * w]);
+            for (i, &kv) in kern.iter().enumerate().take(kw) {
+                let off = i as i64 - r;
+                let (lo, hi) = ((-off).max(0) as usize, ((w as i64) - off).clamp(0, w as i64) as usize);
+                for x in lo..hi {
+                    acc[x] += row[(x as i64 + off) as usize] * kv;
+                }
+            }
+        }
+    } else {
+        let r = (kh / 2) as i64;
+        for y in 0..h {
+            let acc = &mut dst[y * w..(y + 1) * w];
+            for (j, &kv) in kern.iter().enumerate().take(kh) {
+                let sy = y as i64 - r + j as i64;
+                if sy < 0 || sy >= h as i64 {
+                    continue;
+                }
+                let row = &src[sy as usize * w..(sy as usize + 1) * w];
+                for x in 0..w {
+                    acc[x] += row[x] * kv;
+                }
+            }
+        }
+    }
+    dst
 }

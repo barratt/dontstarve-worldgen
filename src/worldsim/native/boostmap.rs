@@ -618,7 +618,29 @@ impl BoostMap {
 }
 
 /// Lattice rasteriser shared by SitePoints, GetSiteArea and the tile map.
+/// Worldgen asks for the same site several times (area, then points), so
+/// results are remembered by their exact inputs.
 pub fn lattice_points(poly: &[P2], sx: f32, sy: f32, width: f64, height: f64) -> Vec<P2> {
+    type Key = (Vec<(u32, u32)>, u32, u32, u64, u64);
+    thread_local! {
+        static MEMO: std::cell::RefCell<HashMap<Key, Vec<P2>>> = Default::default();
+    }
+    let key: Key = (poly.iter().map(|p| (p.0.to_bits(), p.1.to_bits())).collect(), sx.to_bits(), sy.to_bits(), width.to_bits(), height.to_bits());
+    if let Some(hit) = MEMO.with(|m| m.borrow().get(&key).cloned()) {
+        return hit;
+    }
+    let out = lattice_points_uncached(poly, sx, sy, width, height);
+    MEMO.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() > 4096 {
+            m.clear();
+        }
+        m.insert(key, out.clone());
+    });
+    out
+}
+
+fn lattice_points_uncached(poly: &[P2], sx: f32, sy: f32, width: f64, height: f64) -> Vec<P2> {
     let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, -f32::MAX, -f32::MAX);
     for &(x, y) in poly {
         if x < minx { minx = x; }
