@@ -318,6 +318,7 @@ Limits:
 
 Questions, bug reports and seed finds are welcome on the
 [MapsNotIncluded Discord](https://discord.gg/3vhCpp6PNq).
+For Oxygen Not Included seeds, see [MapsNotIncluded](https://mapsnotincluded.org).
 
 ## Licence
 
