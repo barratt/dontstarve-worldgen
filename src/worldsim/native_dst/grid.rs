@@ -122,10 +122,21 @@ impl Tiles {
     }
 }
 
-/// VC9 std::random_shuffle with pcg32_rand (0x14012b580).
+/// VC9 std::random_shuffle with pcg32_rand (0x14012b580); on Linux,
+/// libstdc++'s.
 pub fn random_shuffle<T>(a: &mut [T]) {
     let n = a.len();
     if n < 2 {
+        return;
+    }
+    if crate::platform::current() == crate::platform::Platform::Linux {
+        // libstdc++ with RAND_MAX = INT_MAX: j = rand() % (i + 1).
+        for i in 1..n {
+            let j = pcg::rand() as usize % (i + 1);
+            if j != i {
+                a.swap(i, j);
+            }
+        }
         return;
     }
     let mut idx: u32 = 2;

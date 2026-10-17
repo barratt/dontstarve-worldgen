@@ -8,7 +8,7 @@
 //! { "game": "ds" | "dst", "root": "/game", "seed": 1001,
 //!   "options": { "dlc": "rog", "level": "cave", "current_level": 2,
 //!                "choices": "{...}", "preset": "DST_CAVE",
-//!                "world_size": "huge" },
+//!                "world_size": "huge", "platform": "linux" },
 //!   "where": "prefabs.pigking >= 1", "savedata": false }
 //! ```
 //!
@@ -40,6 +40,7 @@ fn options(v: &Value) -> WorldOptions {
         preset: s("preset"),
         gen_parameters: s("gen_parameters"),
         world_size: s("world_size"),
+        platform: s("platform"),
     }
 }
 

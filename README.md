@@ -90,6 +90,9 @@ installed games (below), then:
      (Small, Medium, Large or Huge; Large is the game's default). It
      changes the world generated, as it does in the game; it isn't a
      filter.
+   - Don't Starve Together, Host: Windows (the game, or a Windows dedicated
+     server) or a Linux dedicated server. They make different worlds from
+     the same seed (see Accuracy), so pick the one the world is hosted on.
 2. **Filters.**
    - **Add a filter:** "Add filter" lists everything the world type
      contains, with the game's icons and names. It has tabs for points of
@@ -222,6 +225,9 @@ World options:
     (default `large`, which the game stores as `default`).
   - `--gen-parameters FILE`: any world-generation parameter string the game
     passes to its generator.
+  - `--platform windows|linux`: the build that generates the world (default
+    `windows`: the game, or a Windows dedicated server; `linux`: a Linux
+    dedicated server).
 
 A Don't Starve seed is the number stored as `meta.seed` in a save. The same
 seed gives a different world for a different DLC, world type or settings,
@@ -264,8 +270,20 @@ The native and WebAssembly builds both match on every world below:
 | DS caves and ruins | 12 | identical |
 | DST forest | 6 | identical |
 | DST caves | 3 | identical |
+| DST forest, Linux dedicated server (incl. small and huge) | 8 | identical |
+| DST caves, Linux dedicated server (incl. huge) | 3 | identical |
 
 Seeds the game itself fails to generate fail the same way here.
+
+**Windows and Linux make different DST worlds from the same seed.** Both
+builds draw from the same random stream, but Klei's `pcg32_rand` reduces each
+number modulo the C runtime's `RAND_MAX`, which is 32767 on Windows and
+2147483647 on Linux. Every shuffle the native generator does (picking where
+set pieces go, and the points that rooms are filled from) comes out
+differently, and so does the world from the first set piece on. The Linux
+build also prints numbers the glibc way (`1e-05`, rounded once). Choose the
+host on the page, or `--platform linux` on the command line. Worlds hosted
+from a Mac have not been compared.
 
 The reference builds are DS 578406 (its final Steam build) and DST 756039.
 Script changes in a DST update are picked up automatically, because the
@@ -286,9 +304,9 @@ The generator does three things to reproduce the game exactly:
    random number drawn.
 3. **Matches the game's numerics on every platform.**
    - Random numbers: the Visual C++ 2008 `rand()` stream for DS, PCG32 for
-     DST.
+     DST (reduced by the Windows or Linux `RAND_MAX`, see Accuracy).
    - Number formatting: the Visual C++ 2008 runtime's, reimplemented, for
-     example `1e+020` and its rounding rules.
+     example `1e+020` and its rounding rules; glibc's for DST on Linux.
    - Maths functions: musl's (`vendor/musl-math`), which give the games'
      values.
 

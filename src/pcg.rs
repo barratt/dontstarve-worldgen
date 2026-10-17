@@ -29,12 +29,14 @@ pub fn raw() -> u32 {
     })
 }
 
-/// pcg32_rand (0x1403d4210): rejects raw outputs below 4, returns out % 32767.
+/// pcg32_rand (0x1403d4210): rejects raw outputs below 4, returns
+/// out % RAND_MAX (32767 on Windows, 0x7FFFFFFF on Linux).
 pub fn rand() -> u32 {
+    let rand_max = crate::platform::current().rand_max();
     loop {
         let out = raw();
         if out >= 4 {
-            return out % 32767;
+            return out % rand_max;
         }
     }
 }

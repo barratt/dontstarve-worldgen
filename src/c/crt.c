@@ -42,13 +42,14 @@ double ds_tanh(double x) { return dsm_tanh(x); }
 double ds_pow(double x, double y) { return dsm_pow(x, y); }
 double ds_atan2(double y, double x) { return dsm_atan2(y, x); }
 
-/* MSVCR90-style double formatting, implemented in Rust (src/msvc_fmt.rs).
-   Returns -1 when spec is not a single double conversion. */
+/* MSVCR90-style double formatting (glibc-style for DST's Linux build),
+   implemented in Rust (src/msvc_fmt.rs, src/glibc_fmt.rs). Returns -1 when
+   spec is not a single double conversion. */
 int ds_fmt_double(char *out, size_t cap, const char *spec, double v);
 
 /* Lua calls sprintf with one conversion per call ("%.14g" for tostring, one
    string.format item otherwise). Double conversions are formatted the way
-   MSVCR90 does; everything else (integers, strings, pointers) prints the
+   the game's C runtime does; everything else (integers, strings, pointers) prints the
    same in any C runtime. Lua's buffers are at least LUAI_MAXNUMBER2STR (32)
    bytes for numbers and MAX_ITEM (512) for string.format items. */
 int ds_sprintf(char *buf, const char *fmt, ...) {

@@ -345,7 +345,8 @@ pub fn format(spec: &Spec, v: f64) -> String {
 }
 
 /// C entry point used by the Lua build's `sprintf` (src/c/crt.c): formats
-/// one double conversion into `out` (capacity `cap`, NUL-terminated).
+/// one double conversion into `out` (capacity `cap`, NUL-terminated), the
+/// way the current platform's C runtime does (glibc for DST on Linux).
 /// Returns the length written, or -1 if `spec` is not a double conversion.
 ///
 /// # Safety
@@ -353,7 +354,10 @@ pub fn format(spec: &Spec, v: f64) -> String {
 #[no_mangle]
 pub unsafe extern "C" fn ds_fmt_double(out: *mut c_char, cap: usize, spec: *const c_char, v: f64) -> c_int {
     let Some(spec) = Spec::parse(CStr::from_ptr(spec).to_bytes()) else { return -1 };
-    let s = format(&spec, v);
+    let s = match crate::platform::current() {
+        crate::platform::Platform::Windows => format(&spec, v),
+        crate::platform::Platform::Linux => crate::glibc_fmt::format(&spec, v),
+    };
     let n = s.len().min(cap.saturating_sub(1));
     std::ptr::copy_nonoverlapping(s.as_ptr(), out as *mut u8, n);
     *out.add(n) = 0;

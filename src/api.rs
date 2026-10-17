@@ -12,6 +12,7 @@ use std::rc::Rc;
 use sha2::{Digest, Sha256};
 
 use crate::env::{self, Config};
+use crate::platform::Platform;
 use crate::summary;
 use crate::worldsim::native::Native;
 use crate::worldsim::native_dst::NativeDst;
@@ -41,6 +42,9 @@ pub struct WorldOptions {
     /// DST: the World Size setting, small, medium, large or huge (default
     /// large). Replaces the preset's `world_size` override.
     pub world_size: Option<String>,
+    /// DST: which build to reproduce, windows (the game, default) or linux
+    /// (the Linux dedicated server), see [`crate::platform`].
+    pub platform: Option<String>,
 }
 
 /// The game's World Size choices and the value each writes into the
@@ -79,6 +83,7 @@ pub struct Generator {
     dlc: String,
     gen_parameters: String,
     ground_names: BTreeMap<u8, String>,
+    platform: Platform,
 }
 
 /// The level type a new world of each DLC normally uses.
@@ -110,7 +115,10 @@ impl Generator {
         let level = opts.level.clone().unwrap_or_else(|| default_level(&dlc).into());
         let gen_parameters = env::gen_parameters(&game.join("data"), &level, &dlc, opts.choices.as_deref(), opts.current_level)?;
         let ground_names = ground_names(game, &dlc);
-        Ok(Generator { game: game.to_path_buf(), dst: false, dlc, gen_parameters, ground_names })
+        if platform(opts)? != Platform::Windows {
+            return Err("the platform option is for Don't Starve Together only".into());
+        }
+        Ok(Generator { game: game.to_path_buf(), dst: false, dlc, gen_parameters, ground_names, platform: Platform::Windows })
     }
 
     /// Don't Starve Together: `game` is the DST (or dedicated server) install.
@@ -135,7 +143,8 @@ impl Generator {
             Some(size) => with_world_size(&gen_parameters, size)?,
             None => gen_parameters,
         };
-        Ok(Generator { game: game.to_path_buf(), dst: true, dlc: "dst".into(), gen_parameters, ground_names: Default::default() })
+        let platform = platform(opts)?;
+        Ok(Generator { game: game.to_path_buf(), dst: true, dlc: "dst".into(), gen_parameters, ground_names: Default::default(), platform })
     }
 
     pub fn generate(&self, seed: u32) -> Result<World, String> {
@@ -148,6 +157,7 @@ impl Generator {
                 gen_parameters: self.gen_parameters.clone(),
                 gen_moddata: "null".into(),
                 capture_log: false,
+                platform: self.platform,
             };
             let out = crate::dst_env::run(&config, Rc::new(RefCell::new(NativeDst::new())))?;
             return Ok(World { seed, savedata: out.savedata, ms: elapsed_ms(started), dst_tile_names: Some(out.tile_names), ds_ground_names: None });
@@ -187,6 +197,7 @@ impl Generator {
                 "name": "ds-worldgen",
                 "version": env!("CARGO_PKG_VERSION"),
                 "game_build": if self.dst { crate::dst_env::APP_VERSION } else { env::APP_VERSION },
+                "platform": self.platform.name(),
                 "generation_ms": (world.ms * 10.0).round() / 10.0,
                 "savedata_sha256": sha256(&world.savedata),
                 "seed_input": world.seed,
@@ -194,6 +205,10 @@ impl Generator {
         };
         summary::summarise(&save, &ctx)
     }
+}
+
+fn platform(opts: &WorldOptions) -> Result<Platform, String> {
+    opts.platform.as_deref().map(Platform::parse).transpose().map(Option::unwrap_or_default)
 }
 
 fn elapsed_ms(started: std::time::Instant) -> f64 {

@@ -13,6 +13,7 @@ use std::rc::Rc;
 use crate::lua::ffi;
 use crate::lua::{Ctx, Lua};
 use crate::pcg;
+use crate::platform::{self, Platform};
 use crate::value::Value;
 use crate::vfs::Vfs;
 use crate::worldsim::WorldSim;
@@ -25,6 +26,7 @@ pub struct DstConfig {
     pub gen_parameters: String,
     pub gen_moddata: String,
     pub capture_log: bool,
+    pub platform: Platform,
 }
 
 pub struct DstOutput {
@@ -62,7 +64,9 @@ fn utf8_chars(s: &[u8]) -> Vec<char> {
 
 pub fn run(config: &DstConfig, worldsim: Rc<RefCell<dyn WorldSim>>) -> Result<DstOutput, String> {
     unsafe { ffi::ds_set_number2int_round(0) };
+    platform::set(config.platform);
     let result = run_inner(config, worldsim);
+    platform::set(Platform::Windows);
     unsafe { ffi::ds_set_number2int_round(1) };
     result
 }
@@ -72,17 +76,18 @@ fn run_inner(config: &DstConfig, worldsim: Rc<RefCell<dyn WorldSim>>) -> Result<
     let vfs = Rc::new(Vfs::with_scripts_zip(&config.data_root, config.mods_dir.clone())?);
     let log = Rc::new(RefCell::new(Vec::<String>::new()));
 
+    let (build_date, build_time) = config.platform.build_stamp();
     for (k, v) in [
         ("GEN_PARAMETERS", config.gen_parameters.as_str()),
         ("GEN_MODDATA", config.gen_moddata.as_str()),
-        ("PLATFORM", "WIN32"),
+        ("PLATFORM", config.platform.engine_name()),
         ("CONFIGURATION", "PRODUCTION"),
         ("BRANCH", "release"),
         ("MODS_ROOT", "../mods/"),
         ("APP_REGION", "NONE"),
         ("APP_VERSION", APP_VERSION),
-        ("APP_BUILD_DATE", "441"),
-        ("APP_BUILD_TIME", "01:32:27"),
+        ("APP_BUILD_DATE", build_date),
+        ("APP_BUILD_TIME", build_time),
     ] {
         lua.set_global(k, &Value::str(v));
     }

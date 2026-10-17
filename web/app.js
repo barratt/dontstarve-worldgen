@@ -119,6 +119,8 @@ function worldOptions() {
     const opts = { preset: $("preset").value };
     // Large is the game's default: leave it out so default worlds keep their cache key.
     if ($("world-size").value !== "large") opts.world_size = $("world-size").value;
+    // Likewise Windows, the default.
+    if ($("platform").value !== "windows") opts.platform = $("platform").value;
     return opts;
   }
   const opts = { dlc: $("dlc").value, level: $("level").value };
@@ -134,6 +136,7 @@ function setupGame() {
   $("level-label").hidden = !ds;
   $("preset-label").hidden = ds;
   $("world-size-label").hidden = ds;
+  $("platform-label").hidden = ds;
   if (ds) {
     const dlcs = ["base", ...embedded.ds.dlcs];
     fillSelect($("dlc"), dlcs.map((d) => [d, DLC_NAMES[d]]), dlcs.includes("rog") ? "rog" : dlcs[0]);
@@ -177,6 +180,7 @@ $("level").addEventListener("change", () => { updateCurrentLevel(); worldChanged
 $("current-level").addEventListener("change", worldChanged);
 $("preset").addEventListener("change", worldChanged);
 $("world-size").addEventListener("change", worldChanged);
+$("platform").addEventListener("change", worldChanged);
 
 // ---------------------------------------------------------------- assets: icons and names
 

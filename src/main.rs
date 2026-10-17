@@ -20,7 +20,9 @@ USAGE:
            volcano|porkland|cave|adventure (default per DLC), --current-level N
            (cave 1 caves / 2 ruins, adventure 1..5), --choices '{ lua table }'.
       DST: --preset SURVIVAL_TOGETHER|DST_CAVE or --gen-parameters FILE,
-           --world-size small|medium|large|huge (default large).
+           --world-size small|medium|large|huge (default large),
+           --platform windows|linux (default windows; linux: the Linux
+           dedicated server, whose worlds differ for the same seed).
 
   ds-worldgen search (--game <dir> | --dst <dir>) --seeds A..B [--where EXPR]
                      [--jobs N] [--output FILE]  (+ the generate world options)
@@ -115,6 +117,7 @@ fn generator(args: &[String]) -> Result<Generator, String> {
         preset: flag(args, "--preset"),
         gen_parameters,
         world_size: flag(args, "--world-size"),
+        platform: flag(args, "--platform"),
     };
     if let Some(dst) = flag(args, "--dst") {
         return Generator::dst(Path::new(&dst), &opts);
